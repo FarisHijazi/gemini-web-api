@@ -181,8 +181,11 @@ In short:
 - **Auth** — cookies read from the local Chrome store via `browser_cookie3`;
   `gemini_webapi` auto-refreshes the rotating `__Secure-1PSIDTS`.
 - **OpenAI layer** — `gemini_openai/server.py` (FastAPI). Messages are flattened
-  to a transcript; streaming is emulated by chunking the buffered reply as SSE
-  deltas (the upstream reply is buffered, not token-streamed).
+  to a transcript; streaming is **true token streaming** — each upstream
+  `text_delta` (from `gemini_webapi`'s `generate_content_stream`) is forwarded
+  live as an SSE `chat.completion.chunk` delta as it arrives. (Tool-calling
+  requests are the one exception: they buffer, since the full reply is needed to
+  parse the `tool_calls` JSON.)
 
 ## Video (Veo) status
 

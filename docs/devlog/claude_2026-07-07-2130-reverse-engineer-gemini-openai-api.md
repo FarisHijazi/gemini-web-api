@@ -50,10 +50,13 @@ symptom was the token fetch hitting `/app` while `batchexecute` correctly hit
 ## 3. OpenAI compatibility layer
 
 - `POST /v1/chat/completions`: OpenAI messages flattened to a transcript, sent to
-  `generate_content`. Streaming (`stream:true`) is emulated by chunking the
-  buffered reply into SSE `chat.completion.chunk` deltas — upstream is buffered,
-  not token-streamed, but this satisfies the OpenAI streaming contract (works
-  with the official SDK, verified).
+  `generate_content`. Streaming (`stream:true`) is **true token streaming**: it
+  consumes `gemini_webapi`'s `generate_content_stream` and forwards each upstream
+  `text_delta` live as an SSE `chat.completion.chunk` delta (verified: TTFT well
+  below total, deltas arrive over the generation window). Tool-calling requests
+  still buffer — the complete reply is needed to parse the `tool_calls` JSON.
+  (Originally this was faked by slicing a buffered reply; replaced once the
+  library's streaming API was wired in — see the true-streaming devlog.)
 - `GET /v1/models`, `POST /v1/images/generations` (image gen works).
 - Model aliases: `gpt-4*`→pro, `gpt-3.5-turbo`→flash, plus `gemini-3-*` names.
 - Verified end-to-end with the official `openai` Python SDK: non-stream, stream,
