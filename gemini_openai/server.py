@@ -273,3 +273,10 @@ async def serve_file(name: str):
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="not found")
     return FileResponse(path)
+
+
+def run() -> None:
+    """Console-script entry point (`gemini-web-api`). Starts the uvicorn server."""
+    import uvicorn
+
+    uvicorn.run("gemini_openai.server:app", host=config.HOST, port=config.PORT, log_level="info")

@@ -36,6 +36,18 @@ and media generation.
 
 ## Quick start
 
+**One line, no clone** (needs [`uv`](https://docs.astral.sh/uv/) + Chrome logged
+in to gemini.google.com):
+
+```bash
+uvx --from git+https://github.com/FarisHijazi/gemini-web-api gemini-web-api
+```
+
+That fetches, installs into an isolated env, and starts the server on `:8100`.
+Point at a specific account with `GEMINI_AUTHUSER=N` in front of it.
+
+**Or from a clone** (for development):
+
 ```bash
 uv sync                            # install deps
 uv run --active python main.py     # start the server on :8100
@@ -103,7 +115,9 @@ r.choices[0].message.tool_calls  # -> [get_weather({"city":"Tokyo"})]
 
 ### opencode
 
-`~/.config/opencode/opencode.json`:
+`~/.config/opencode/opencode.json` (set `tools: true` so opencode uses the
+emulated function calling; use your own host instead of `localhost` if the server
+runs elsewhere, e.g. over Tailscale):
 
 ```json
 {
@@ -111,13 +125,19 @@ r.choices[0].message.tool_calls  # -> [get_weather({"city":"Tokyo"})]
   "provider": {
     "gemini-web": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "Gemini Web",
-      "options": { "baseURL": "http://buzastation:8100/v1", "apiKey": "not-needed" },
-      "models": { "gemini-3-pro": { "name": "Gemini 3 Pro" }, "gemini-3-flash": { "name": "Gemini 3 Flash" } }
+      "name": "Gemini Web (local)",
+      "options": { "baseURL": "http://localhost:8100/v1", "apiKey": "not-needed" },
+      "models": {
+        "gemini-3-pro": { "name": "Gemini 3 Pro", "tools": true },
+        "gemini-3-flash": { "name": "Gemini 3 Flash", "tools": true },
+        "gemini-3-flash-thinking": { "name": "Gemini 3 Flash Thinking", "tools": true }
+      }
     }
   }
 }
 ```
+
+Then: `opencode run -m gemini-web/gemini-3-flash "your prompt"` (verified working).
 
 > Caveat: emulated tool calling is less token-efficient and less rock-solid than
 > a native function-calling API — expect occasional parse retries on complex
