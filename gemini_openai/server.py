@@ -66,11 +66,9 @@ def _est_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-def render_output(output) -> str:
-    """ModelOutput -> markdown text including any generated media URLs."""
+def _media_markdown(output) -> str:
+    """Markdown for any generated media (images/videos) on a ModelOutput."""
     parts: list[str] = []
-    if output.text:
-        parts.append(output.text)
     for img in getattr(output, "images", []) or []:
         url = getattr(img, "url", None)
         title = getattr(img, "title", None) or "image"
@@ -82,6 +80,13 @@ def render_output(output) -> str:
         if url:
             parts.append(f"[{title}]({url})")
     return "\n\n".join(parts).strip()
+
+
+def render_output(output) -> str:
+    """ModelOutput -> markdown text including any generated media URLs."""
+    text = (output.text or "").strip()
+    media = _media_markdown(output)
+    return "\n\n".join(p for p in (text, media) if p).strip()
 
 
 # --------------------------------------------------------------------------- #
@@ -151,13 +156,54 @@ async def chat_completions(req: ChatCompletionRequest, _=Depends(check_key)):
             )
         )
 
-    # Streaming: buffer upstream, then emit as OpenAI SSE chunks.
     async def event_stream():
         rid = _rid()
         created = int(time.time())
         yield _sse(chunk(model_name, rid, created, {"role": "assistant"}))
+
+        # Tool calls can't be streamed incrementally: we need the complete reply
+        # to parse the {"tool_calls":[…]} JSON, so this path stays buffered.
+        if req.tools and req.tool_choice != "none":
+            try:
+                content, tool_calls, _ = await _run_generation(req)
+            except HTTPException as e:
+                yield _sse(chunk(model_name, rid, created, {"content": f"[error: {e.detail}]"}, "stop"))
+                yield "data: [DONE]\n\n"
+                return
+            except Exception as e:  # noqa: BLE001
+                yield _sse(chunk(model_name, rid, created, {"content": f"[error: {e}]"}, "stop"))
+                yield "data: [DONE]\n\n"
+                return
+            if tool_calls:
+                for tc in tool_calls:
+                    yield _sse(chunk(model_name, rid, created, {"tool_calls": [tc]}))
+                    await asyncio.sleep(0)
+                yield _sse(chunk(model_name, rid, created, {}, "tool_calls"))
+            else:
+                for piece in _chunk_text(content or ""):
+                    yield _sse(chunk(model_name, rid, created, {"content": piece}))
+                    await asyncio.sleep(0)
+                yield _sse(chunk(model_name, rid, created, {}, "stop"))
+            yield "data: [DONE]\n\n"
+            return
+
+        # True streaming: forward each upstream text_delta as it arrives.
+        prompt, files = flatten_messages(req.messages)
+        model = config.resolve_model(req.model)
+        if not prompt.strip() and not files:
+            yield _sse(chunk(model_name, rid, created, {"content": "[error: empty prompt]"}, "stop"))
+            yield "data: [DONE]\n\n"
+            return
+
+        final_output = None
         try:
-            content, tool_calls, _ = await _run_generation(req)
+            async for out in manager.generate_stream(
+                prompt, files=files or None, model=model, temporary=True
+            ):
+                final_output = out
+                delta = out.text_delta or ""
+                if delta:
+                    yield _sse(chunk(model_name, rid, created, {"content": delta}))
         except HTTPException as e:
             yield _sse(chunk(model_name, rid, created, {"content": f"[error: {e.detail}]"}, "stop"))
             yield "data: [DONE]\n\n"
@@ -167,17 +213,11 @@ async def chat_completions(req: ChatCompletionRequest, _=Depends(check_key)):
             yield "data: [DONE]\n\n"
             return
 
-        if tool_calls:
-            # Emit each tool call as a streaming delta (index + arguments string).
-            for tc in tool_calls:
-                yield _sse(chunk(model_name, rid, created, {"tool_calls": [tc]}))
-                await asyncio.sleep(0)
-            yield _sse(chunk(model_name, rid, created, {}, "tool_calls"))
-        else:
-            for piece in _chunk_text(content or ""):
-                yield _sse(chunk(model_name, rid, created, {"content": piece}))
-                await asyncio.sleep(0)  # cooperative flush
-            yield _sse(chunk(model_name, rid, created, {}, "stop"))
+        # Any generated media (images/videos) isn't part of text_delta — append it.
+        media = _media_markdown(final_output) if final_output else ""
+        if media:
+            yield _sse(chunk(model_name, rid, created, {"content": "\n\n" + media}))
+        yield _sse(chunk(model_name, rid, created, {}, "stop"))
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

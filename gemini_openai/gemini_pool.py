@@ -80,5 +80,27 @@ class GeminiManager:
             client = await self.get()
             return await client.generate_content(*args, **kwargs)
 
+    async def generate_stream(self, *args, **kwargs):
+        """True token streaming: yields ModelOutput chunks (with `text_delta`).
+
+        Same one-shot re-init retry as `generate`, but only if the failure happens
+        before any chunk was yielded (we can't cleanly restart mid-stream).
+        """
+        client = await self.get()
+        yielded = False
+        try:
+            async for out in client.generate_content_stream(*args, **kwargs):
+                yielded = True
+                yield out
+            return
+        except _RETRYABLE:
+            if yielded:
+                raise
+        # Nothing was emitted yet — safe to re-init and restart once.
+        await self.reset()
+        client = await self.get()
+        async for out in client.generate_content_stream(*args, **kwargs):
+            yield out
+
 
 manager = GeminiManager()
