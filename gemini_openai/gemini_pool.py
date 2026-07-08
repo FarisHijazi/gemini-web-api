@@ -10,9 +10,14 @@ from __future__ import annotations
 import asyncio
 
 from gemini_webapi import GeminiClient
-from gemini_webapi.exceptions import AuthError
+from gemini_webapi.exceptions import APIError, AuthError
 
 from . import config
+
+# Errors worth a one-shot re-init + retry: auth expiry, and transient Google
+# API errors (e.g. 1097) that leave a long-running client wedged on a stale
+# build label / session — a fresh client clears them.
+_RETRYABLE = (AuthError, APIError)
 
 
 class GeminiManager:
@@ -61,11 +66,16 @@ class GeminiManager:
             self._client = None
 
     async def generate(self, *args, **kwargs):
-        """generate_content with one automatic re-init retry on auth failure."""
+        """generate_content with one automatic re-init retry on auth/API failure.
+
+        A long-running shared client can go stale (rotated build label, expired
+        session) and throw AuthError or a transient APIError (e.g. 1097). We drop
+        the wedged client and retry once against a freshly-initialized one.
+        """
         client = await self.get()
         try:
             return await client.generate_content(*args, **kwargs)
-        except AuthError:
+        except _RETRYABLE:
             await self.reset()
             client = await self.get()
             return await client.generate_content(*args, **kwargs)
