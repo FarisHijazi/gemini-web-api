@@ -42,7 +42,19 @@ Settings live in `~/.config/gemini-web-api/env` (`GEMINI_AUTHUSER`,
 `GEMINI_API_PORT`, `GEMINI_CDP_URL`, `GEMINI_API_KEY`) — edit, then
 `systemctl --user restart gemini-web-api`.
 
-If the service isn't installed on this machine, run it directly instead:
+⚠️ **If the service is installed, never hand-start a second server** (`nohup … &`)
+and never `fuser -k 8100/tcp` to "restart" it — your server grabs the port, the
+service then crash-loops trying to bind it (observed: 61 restarts). To change
+anything, edit the env file and restart the *service*:
+
+```bash
+sed -i 's/^GEMINI_AUTHUSER=.*/GEMINI_AUTHUSER=2/' ~/.config/gemini-web-api/env
+systemctl --user restart gemini-web-api
+until curl -sf -m2 http://localhost:8100/health >/dev/null; do sleep 2; done
+```
+
+Only if the service is **not** installed (`systemctl --user status gemini-web-api`
+→ not-found), run it directly:
 ```bash
 GEMINI_AUTHUSER=1 nohup $GW gemini-web-api >/tmp/gemini-web-api.log 2>&1 &
 until curl -sf -m2 http://localhost:8100/health >/dev/null; do sleep 2; done
@@ -187,8 +199,21 @@ until curl -sf -m2 http://localhost:8100/health >/dev/null; do sleep 2; done
 ```
 
 Cycle `N = 0,1,2,…` until a profile still has quota. To find which profiles are
-signed in, start on each `N` and send a cheap chat request — a working profile
-answers, an unused index errors.
+signed in, start on each `N` and send a cheap **chat** request first — a working
+profile answers, an unused index errors — so you don't spend 10 minutes of video
+timeout on an account that isn't even logged in.
+
+**Probe faster:** the default video timeout is 600s, so each exhausted account
+costs 10 minutes. While hunting for a profile with quota, shorten it — a real
+generation finishes in ~60–180s, so 240s is plenty to tell "working" from
+"exhausted":
+
+```bash
+echo 'GEMINI_VIDEO_TIMEOUT=240' >> ~/.config/gemini-web-api/env
+systemctl --user restart gemini-web-api
+```
+
+Remove that line once you've found a good profile.
 
 ## 7. Troubleshooting — "it doesn't work / no browser cookies"
 
