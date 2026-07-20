@@ -107,6 +107,27 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/v1/status")
+async def status() -> dict:
+    """Effective server configuration.
+
+    The CLI/doctor runs in a different shell than the server (often a systemd
+    service), so its own env vars say nothing about how the server is actually
+    configured. This reports the truth. No secrets are included.
+    """
+    return {
+        "status": "ok",
+        "authuser": config.AUTHUSER or "0",
+        "authuser_fallbacks": [
+            p.strip() for p in os.getenv("GEMINI_AUTHUSER_FALLBACKS", "").split(",") if p.strip()
+        ],
+        "cdp_bridge": bool(config.CDP_URL),      # video download + cookie harvest
+        "video_timeout_s": video_mod.VIDEO_TIMEOUT,
+        "media_dir": video_mod.MEDIA_DIR,
+        "api_key_required": bool(config.API_KEY),
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Chat completions
 # --------------------------------------------------------------------------- #
