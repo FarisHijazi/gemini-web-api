@@ -305,6 +305,7 @@ python cli.py chat "write a haiku about the sea" --model gemini-3-pro --stream
 python cli.py models
 python cli.py image "a red fox in the snow, cinematic"
 python cli.py video "a fox running through a snowy forest" --wait
+python cli.py doctor          # diagnose cookie/auth/server problems
 ```
 
 > Unofficial project. Uses your personal Google session; respect Google's ToS

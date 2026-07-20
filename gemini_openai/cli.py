@@ -110,6 +110,69 @@ def cmd_video(args) -> None:
             sys.exit(f"video failed: {j.get('error')}")
 
 
+def cmd_doctor(args) -> None:
+    """Diagnose auth/cookie problems — the #1 cause of 'it doesn't work'."""
+    print("gemini-web-api doctor\n")
+    ok = True
+
+    # 1. Where do credentials come from?
+    env_psid = os.getenv("GEMINI_1PSID")
+    if env_psid:
+        print(f"credentials: GEMINI_1PSID env var (len {len(env_psid)})")
+        print(f"  GEMINI_1PSIDTS: {'set' if os.getenv('GEMINI_1PSIDTS') else 'NOT set (usually fine)'}")
+    else:
+        print("credentials: local Chrome cookie store (GEMINI_1PSID not set)")
+        try:
+            from . import config
+        except ImportError:
+            print("  ! cannot import config"); return
+        print(f"  chrome dir : {config.CHROME_DIR} "
+              f"({'exists' if os.path.isdir(config.CHROME_DIR) else 'MISSING'})")
+        stores = config._cookie_stores()
+        print(f"  cookie DBs : {len(stores)} found")
+        for s in stores[:5]:
+            print(f"      {s}")
+        try:
+            psid, psidts = config.get_cookies()
+        except Exception as e:  # noqa: BLE001
+            psid = psidts = None
+            print(f"  ! cookie read failed: {type(e).__name__}: {e}")
+        print(f"  __Secure-1PSID  : {'found' if psid else 'NOT FOUND'}")
+        print(f"  __Secure-1PSIDTS: {'found' if psidts else 'not found (usually fine)'}")
+        try:
+            print(f"  full cookie jar : {len(config.get_full_jar())} cookies")
+        except Exception as e:  # noqa: BLE001
+            print(f"  ! full jar failed: {type(e).__name__}: {e}")
+        if not psid:
+            ok = False
+            print("""
+  FIX: no usable Chrome cookies on this machine. Either
+    (a) install/open Chrome here and log in to https://gemini.google.com, or
+    (b) supply cookies explicitly (headless/remote/WSL-with-Windows-Chrome):
+          export GEMINI_1PSID='<__Secure-1PSID value>'
+          export GEMINI_1PSIDTS='<__Secure-1PSIDTS value>'
+        Get them in Chrome: DevTools > Application > Cookies >
+        https://gemini.google.com > copy __Secure-1PSID / __Secure-1PSIDTS.
+        On Linux the cookie DB is encrypted — the login keyring must be
+        unlocked, otherwise use (b).""")
+
+    print(f"\n  GEMINI_AUTHUSER : {os.getenv('GEMINI_AUTHUSER') or '(unset -> u/0)'}")
+    print(f"  GEMINI_CDP_URL  : {os.getenv('GEMINI_CDP_URL') or '(unset -> video download disabled)'}")
+
+    # 2. Is a server reachable?
+    try:
+        with urllib.request.urlopen(BASE + "/health", timeout=5) as r:
+            print(f"\nserver at {BASE}: {json.loads(r.read().decode()).get('status')}")
+    except Exception as e:  # noqa: BLE001
+        ok = False
+        print(f"\nserver at {BASE}: NOT REACHABLE ({type(e).__name__})")
+        print("  FIX: start it ->  GEMINI_AUTHUSER=1 nohup gemini-web-api &")
+
+    print("\nresult:", "OK" if ok else "PROBLEMS FOUND (see FIX above)")
+    if not ok:
+        sys.exit(1)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="gemini-cli", description="CLI for the gemini-scraper API")
     p.add_argument("--base", help="API base URL (default $GEMINI_API_BASE or http://localhost:8100)")
@@ -135,6 +198,9 @@ def main() -> None:
     v.add_argument("--wait", action="store_true", help="poll until completed")
     v.add_argument("--interval", type=float, default=8.0)
     v.set_defaults(func=cmd_video)
+
+    d = sub.add_parser("doctor", help="diagnose cookie/auth/server problems")
+    d.set_defaults(func=cmd_doctor)
 
     args = p.parse_args()
     if args.base:
