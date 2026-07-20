@@ -131,6 +131,54 @@ Cycle `N = 0,1,2,…` until a profile still has quota. To find which profiles ar
 signed in, start on each `N` and send a cheap chat request — a working profile
 answers, an unused index errors.
 
+## 7. Troubleshooting — "it doesn't work / no browser cookies"
+
+**Run the diagnostic first. It tells you exactly what's wrong:**
+
+```bash
+$GW gemini-web-api-cli doctor
+```
+
+It reports where credentials come from, which Chrome cookie DBs were found,
+whether `__Secure-1PSID` was extracted, and whether the server is reachable —
+with a concrete FIX for whatever is missing.
+
+### `AuthError: No Gemini credentials`
+
+Means no readable Chrome cookie store on **this** machine. Common causes:
+
+- Chrome isn't installed / never logged in to gemini.google.com **here**.
+- **Running on a remote/headless box** (SSH, container, server) — there is no
+  local browser at all.
+- **WSL:** the code runs in Linux and looks at `~/.config/google-chrome`, but
+  your Chrome is **Windows** Chrome — a different, unreadable profile.
+- Linux cookie DBs are encrypted; the **login keyring must be unlocked**.
+
+**Fix — supply cookies explicitly (works everywhere, no browser needed):**
+
+```bash
+export GEMINI_1PSID='<__Secure-1PSID value>'
+export GEMINI_1PSIDTS='<__Secure-1PSIDTS value>'   # optional; auto-refreshes
+GEMINI_1PSID="$GEMINI_1PSID" nohup $GW gemini-web-api >/tmp/gemini-web-api.log 2>&1 &
+```
+
+Get the values in Chrome on the logged-in machine: **DevTools → Application →
+Cookies → `https://gemini.google.com`** → copy `__Secure-1PSID` and
+`__Secure-1PSIDTS`. These env vars take priority over the local Chrome store.
+
+Related: `GEMINI_CHROME_PROFILE="Profile 5"` pins a specific profile directory
+when auto-detection picks the wrong one.
+
+### Log messages that are NOT the problem
+
+- `Account status: UNAUTHENTICATED - ... cookies have expired` — often benign;
+  generation still succeeds. Only act on it if requests actually fail.
+- `Unexpected error while refreshing cookies: HTTP Error 429` — Google
+  rate-limiting the cookie-rotation endpoint. Harmless; it retries later.
+- `/health` returns `ok` **before** any cookie is read (the client is created
+  lazily on the first real request) — so a healthy server does **not** prove
+  auth works. Always test with an actual `chat` call.
+
 ## Guidance for Claude
 
 - Start the server once, then reuse it; don't restart per command.
