@@ -275,20 +275,22 @@ tools/              # reverse-engineering & verification scripts
 
 ## Claude Code skill
 
-A skill lives at `~/.claude/skills/gemini-web-api/` (`SKILL.md` + a `gemini`
-bash wrapper). It auto-starts the server via `uvx` on first use — no install
-step — and adds Google-profile handling, which matters because image/video have
-per-account daily quotas:
+A single self-contained `SKILL.md` at `~/.claude/skills/gemini-web-api/` — no
+bundled scripts, nothing to install. Every command runs straight from git:
 
 ```bash
-G=~/.claude/skills/gemini-web-api/gemini
-$G chat "explain black holes in one sentence"
-$G chat "count to 20" gemini-3-flash stream    # true token streaming
-$G image "a red fox in the snow" gemini-3-pro cycle   # try other profiles on quota
-$G video "a fox in a snowy forest" gemini-3-pro wait
-$G use 1        # switch to Google profile u/1
-$G accounts     # probe which u/N profiles work
+GW="uvx --from git+https://github.com/FarisHijazi/gemini-web-api"
+
+GEMINI_AUTHUSER=1 nohup $GW gemini-web-api >/tmp/gemini-web-api.log 2>&1 &   # start
+$GW gemini-web-api-cli chat "explain black holes in one sentence"
+$GW gemini-web-api-cli chat "count to 20" --stream        # true token streaming
+$GW gemini-web-api-cli image "a red fox in the snow"
+$GW gemini-web-api-cli video "a fox in a snowy forest" --wait
 ```
+
+It also documents the media gotchas: image/video have **per-account daily
+quotas** (switch `GEMINI_AUTHUSER`), a video job failing with `timed out after
+600s` means that profile's quota is spent, and image URLs are browser-only.
 
 ## CLI
 
