@@ -22,7 +22,7 @@ and media generation.
 | Vision input (images in messages, OpenAI format) | ✅ |
 | Multi-turn conversations, system prompts | ✅ |
 | `gpt-4` / `gpt-4o` / `gpt-3.5-turbo` aliases | ✅ (map to Gemini) |
-| `POST /v1/images/generations` | ✅ |
+| `POST /v1/images/generations` | ✅ returns a URL — [view in a logged-in browser](#images-are-browser-only) |
 | `POST /v1/videos/generations` (Veo) | ✅ async job + poll — see [Video](#video-veo-status) |
 | Google multi-login (`/u/N/`) accounts | ✅ |
 | Automatic cookie / token refresh | ✅ |
@@ -187,6 +187,19 @@ In short:
   requests are the one exception: they buffer, since the full reply is needed to
   parse the `tool_calls` JSON.)
 
+## Images are browser-only
+
+`POST /v1/images/generations` returns an `lh3.googleusercontent.com` URL, but
+**you cannot download that URL from a script**: Google serves generated images
+only to an authenticated *browser* context. Verified — a server-side GET returns
+**403 even with the full cookie jar on the very first hit** (so it's an auth wall,
+not a single-use link), and an in-page `fetch()` is **CORS-blocked** (unlike the
+video host, which is why the browser bridge rescues video but not images).
+
+Open the URL in the Chrome profile that generated it (it redirects to an
+`rd-gg-dl/…=s512` URL and renders fine), or just view the image in the Gemini
+conversation. Don't `curl` it and assume you got a PNG — you'll get a 403 page.
+
 ## Video (Veo) status
 
 Fully reverse-engineered and implemented (see
@@ -260,10 +273,29 @@ cli.py              # tiny zero-dep CLI (chat / models / image / video)
 tools/              # reverse-engineering & verification scripts
 ```
 
+## Claude Code skill
+
+A skill lives at `~/.claude/skills/gemini-web-api/` (`SKILL.md` + a `gemini`
+bash wrapper). It auto-starts the server via `uvx` on first use — no install
+step — and adds Google-profile handling, which matters because image/video have
+per-account daily quotas:
+
+```bash
+G=~/.claude/skills/gemini-web-api/gemini
+$G chat "explain black holes in one sentence"
+$G chat "count to 20" gemini-3-flash stream    # true token streaming
+$G image "a red fox in the snow" gemini-3-pro cycle   # try other profiles on quota
+$G video "a fox in a snowy forest" gemini-3-pro wait
+$G use 1        # switch to Google profile u/1
+$G accounts     # probe which u/N profiles work
+```
+
 ## CLI
 
 A tiny stdlib-only CLI wraps the API (start the server first). Point it elsewhere
-with `--base` or `GEMINI_API_BASE`:
+with `--base` or `GEMINI_API_BASE`. It also ships as a console script, so
+`uvx --from git+https://github.com/FarisHijazi/gemini-web-api gemini-web-api-cli chat "hi"`
+works with no clone:
 
 ```bash
 python cli.py chat "explain black holes in one sentence"
