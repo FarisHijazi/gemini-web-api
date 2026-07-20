@@ -149,34 +149,65 @@ a logged-in browser.
 The MP4 host needs a per-host, per-account `OSID` cookie only Chrome mints, so a
 plain server GET 403s. The fix is to give the server a Chrome DevTools port.
 
-> ⚠️ **The obvious command silently does nothing if Chrome is already running.**
-> `google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.config/google-chrome"`
-> just prints `Opening in existing browser session` — the flag is ignored and
-> **port 9222 never opens**. Always verify:
-> `curl -s http://localhost:9222/json/version`
-
-**Working recipe — a second, logged-in Chrome that doesn't disturb the user's:**
-copy only the auth files (a few MB, not the multi-GB profile) and run headless.
+**This is already set up and automatic** — a second systemd user service,
+`gemini-cdp-chrome`, runs a headless Chrome on `:9222`. The main service `Wants=`
+it, so it comes up automatically. You normally do nothing.
 
 ```bash
-DEST=/tmp/gcdp-profile
+curl -s http://localhost:9222/json/version    # JSON => bridge available
+systemctl --user status gemini-cdp-chrome
+```
+
+How it works (and why it's safe): on every start it rebuilds a **minimal copy**
+of the real Chrome profile — only `Local State` + `Default/{Cookies, Login Data,
+Preferences, Secure Preferences}`, a few MB, not the multi-GB profile — so it is
+signed in with fresh cookies **without touching the user's browser**. Verified:
+39 Google cookies incl. `__Secure-1PSID` readable over CDP.
+
+> ⚠️ **Never try to enable it by hand with**
+> `google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.config/google-chrome"`.
+> If Chrome is already running that just prints `Opening in existing browser
+> session`, the flag is **ignored, port 9222 never opens**, and you'll believe the
+> bridge is on when it isn't. Don't delete Chrome's `SingletonLock` to force it
+> either — use the service.
+
+<details><summary>Install the CDP Chrome service (one time, other machines)</summary>
+
+```bash
+cat > ~/.local/bin/gemini-cdp-prep <<'EOF'
+#!/usr/bin/env bash
+set -u
+SRC="$HOME/.config/google-chrome"; DEST="$HOME/.local/share/gemini-web-api/cdp-profile"
 rm -rf "$DEST"; mkdir -p "$DEST/Default"
-cp ~/.config/google-chrome/"Local State" "$DEST/Local State"
-for f in Cookies "Login Data" Preferences "Secure Preferences"; do
-  cp ~/.config/google-chrome/Default/"$f" "$DEST/Default/$f" 2>/dev/null
+cp "$SRC/Local State" "$DEST/Local State" 2>/dev/null
+for f in "Cookies" "Login Data" "Preferences" "Secure Preferences"; do
+  cp "$SRC/Default/$f" "$DEST/Default/$f" 2>/dev/null
 done
-google-chrome --headless=new --remote-debugging-port=9222 --user-data-dir="$DEST" \
-  --no-first-run --no-default-browser-check about:blank >/tmp/gcdp.log 2>&1 &
-curl -s http://localhost:9222/json/version    # must return JSON
+exit 0
+EOF
+chmod +x ~/.local/bin/gemini-cdp-prep
+cat > ~/.config/systemd/user/gemini-cdp-chrome.service <<'UNIT'
+[Unit]
+Description=Headless Chrome (CDP) for gemini-web-api
+StartLimitIntervalSec=300
+StartLimitBurst=5
+[Service]
+Type=simple
+ExecStartPre=%h/.local/bin/gemini-cdp-prep
+ExecStart=/usr/bin/google-chrome --headless=new --remote-debugging-port=9222 \
+  --user-data-dir=%h/.local/share/gemini-web-api/cdp-profile \
+  --disk-cache-size=52428800 --media-cache-size=52428800 \
+  --no-first-run --no-default-browser-check --disable-gpu \
+  --disable-background-networking --disable-sync --disable-extensions \
+  --disable-dev-shm-usage about:blank
+Restart=on-failure
+RestartSec=10
+[Install]
+WantedBy=default.target
+UNIT
+systemctl --user daemon-reload && systemctl --user enable --now gemini-cdp-chrome
 ```
-
-Same machine + same keyring ⇒ the copy stays logged in (verified: 39 Google
-cookies incl. `__Secure-1PSID` readable over CDP). Then point the server at it:
-
-```bash
-# service: set GEMINI_CDP_URL in ~/.config/gemini-web-api/env, then
-systemctl --user restart gemini-web-api
-```
+</details>
 
 Each job downloads in its own tab keyed by `job_id`, so parallel jobs never collide.
 The same `GEMINI_CDP_URL` also auto-harvests cookies (§7).
