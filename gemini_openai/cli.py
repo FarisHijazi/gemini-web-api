@@ -160,17 +160,33 @@ def cmd_doctor(args) -> None:
     Note: on Linux the cookie DB is encrypted — the login keyring must be
     unlocked, otherwise use (a) or (c).""")
 
-    print(f"\n  GEMINI_AUTHUSER : {os.getenv('GEMINI_AUTHUSER') or '(unset -> u/0)'}")
-    print(f"  GEMINI_CDP_URL  : {os.getenv('GEMINI_CDP_URL') or '(unset -> video download disabled)'}")
+    print(f"\n  this shell's GEMINI_AUTHUSER: {os.getenv('GEMINI_AUTHUSER') or '(unset)'}")
+    print("  (the server has its own config — shown below — which is what matters)")
 
-    # 2. Is a server reachable?
+    # 2. Is a server reachable, and how is IT actually configured?
     try:
         with urllib.request.urlopen(BASE + "/health", timeout=5) as r:
             print(f"\nserver at {BASE}: {json.loads(r.read().decode()).get('status')}")
     except Exception as e:  # noqa: BLE001
         ok = False
         print(f"\nserver at {BASE}: NOT REACHABLE ({type(e).__name__})")
-        print("  FIX: start it ->  GEMINI_AUTHUSER=1 nohup gemini-web-api &")
+        print("  FIX: systemctl --user start gemini-web-api")
+        print("       (or, if not installed:  nohup gemini-web-api &)")
+    else:
+        try:
+            with urllib.request.urlopen(BASE + "/v1/status", timeout=5) as r:
+                st = json.loads(r.read().decode())
+            print(f"  active profile   : u/{st.get('authuser')}")
+            fb = st.get("authuser_fallbacks") or []
+            print(f"  quota failover   : {'u/' + ', u/'.join(fb) if fb else 'OFF '
+                                          '(set GEMINI_AUTHUSER_FALLBACKS to auto-switch profiles)'}")
+            bridge = st.get("cdp_bridge")
+            print(f"  video downloads  : {'ON (CDP bridge)' if bridge else 'OFF — jobs return a browser-only URL'}")
+            print(f"  video timeout    : {st.get('video_timeout_s')}s")
+            if st.get("api_key_required"):
+                print("  auth             : API key required")
+        except Exception:  # noqa: BLE001
+            print("  (server predates /v1/status — restart it to see its config)")
 
     print("\nresult:", "OK" if ok else "PROBLEMS FOUND (see FIX above)")
     if not ok:
