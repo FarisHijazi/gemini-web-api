@@ -154,17 +154,28 @@ Means no readable Chrome cookie store on **this** machine. Common causes:
   your Chrome is **Windows** Chrome — a different, unreadable profile.
 - Linux cookie DBs are encrypted; the **login keyring must be unlocked**.
 
-**Fix — supply cookies explicitly (works everywhere, no browser needed):**
+**Fix (a) — AUTOMATIC, no manual copying.** Point the server at a logged-in
+Chrome's DevTools port; it harvests the cookies itself (`Storage.getCookies`
+returns httpOnly cookies like `__Secure-1PSID`, which page JS cannot read):
+
+```bash
+google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.config/google-chrome"
+GEMINI_CDP_URL=http://localhost:9222 nohup $GW gemini-web-api \
+  >/tmp/gemini-web-api.log 2>&1 &
+```
+
+This kicks in automatically whenever the local cookie store can't be read, and
+the same `GEMINI_CDP_URL` also enables real video downloads (§5).
+
+**Fix (b) — manual fallback**, if you can't run a debug-port Chrome:
 
 ```bash
 export GEMINI_1PSID='<__Secure-1PSID value>'
 export GEMINI_1PSIDTS='<__Secure-1PSIDTS value>'   # optional; auto-refreshes
-GEMINI_1PSID="$GEMINI_1PSID" nohup $GW gemini-web-api >/tmp/gemini-web-api.log 2>&1 &
 ```
 
-Get the values in Chrome on the logged-in machine: **DevTools → Application →
-Cookies → `https://gemini.google.com`** → copy `__Secure-1PSID` and
-`__Secure-1PSIDTS`. These env vars take priority over the local Chrome store.
+Values come from Chrome **DevTools → Application → Cookies →
+`https://gemini.google.com`**. These env vars take priority over everything else.
 
 Related: `GEMINI_CHROME_PROFILE="Profile 5"` pins a specific profile directory
 when auto-detection picks the wrong one.

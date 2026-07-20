@@ -146,15 +146,19 @@ def cmd_doctor(args) -> None:
         if not psid:
             ok = False
             print("""
-  FIX: no usable Chrome cookies on this machine. Either
-    (a) install/open Chrome here and log in to https://gemini.google.com, or
-    (b) supply cookies explicitly (headless/remote/WSL-with-Windows-Chrome):
+  FIX: no usable Chrome cookies on this machine. Best option first:
+    (a) AUTOMATIC — point at a logged-in Chrome over DevTools; cookies
+        (including httpOnly __Secure-1PSID) are harvested for you:
+          google-chrome --remote-debugging-port=9222 \\
+              --user-data-dir="$HOME/.config/google-chrome"
+          export GEMINI_CDP_URL=http://localhost:9222
+    (b) install/open Chrome here and log in to https://gemini.google.com
+    (c) MANUAL fallback — supply cookies explicitly:
           export GEMINI_1PSID='<__Secure-1PSID value>'
           export GEMINI_1PSIDTS='<__Secure-1PSIDTS value>'
-        Get them in Chrome: DevTools > Application > Cookies >
-        https://gemini.google.com > copy __Secure-1PSID / __Secure-1PSIDTS.
-        On Linux the cookie DB is encrypted — the login keyring must be
-        unlocked, otherwise use (b).""")
+        (Chrome DevTools > Application > Cookies > https://gemini.google.com)
+    Note: on Linux the cookie DB is encrypted — the login keyring must be
+    unlocked, otherwise use (a) or (c).""")
 
     print(f"\n  GEMINI_AUTHUSER : {os.getenv('GEMINI_AUTHUSER') or '(unset -> u/0)'}")
     print(f"  GEMINI_CDP_URL  : {os.getenv('GEMINI_CDP_URL') or '(unset -> video download disabled)'}")

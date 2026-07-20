@@ -156,7 +156,7 @@ Then: `opencode run -m gemini-web/gemini-3-flash "your prompt"` (verified workin
 | `GEMINI_PROXY` | *(none)* | HTTP proxy URL |
 | `GEMINI_MEDIA_DIR` | `media` | where generated videos are saved |
 | `GEMINI_VIDEO_TIMEOUT` | `600` | seconds before a video job fails |
-| `GEMINI_CDP_URL` | *(none)* | Chrome DevTools endpoint (e.g. `http://localhost:9222`) enabling server-side video download via the browser bridge |
+| `GEMINI_CDP_URL` | *(none)* | Chrome DevTools endpoint (e.g. `http://localhost:9222`). Enables server-side video download via the browser bridge, **and** auto-harvests cookies (incl. httpOnly `__Secure-1PSID`) when the local Chrome cookie store can't be read |
 
 ### Multi-account / choosing the right Google account
 
