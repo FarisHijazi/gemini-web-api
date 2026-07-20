@@ -97,6 +97,7 @@ import asyncio  # noqa: E402
 import json as _json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
+import time  # noqa: E402
 import urllib.parse  # noqa: E402
 import uuid  # noqa: E402
 
@@ -272,21 +273,60 @@ VIDEO_TIMEOUT = float(os.getenv("GEMINI_VIDEO_TIMEOUT", "600"))  # seconds
 JOBS: dict[str, dict] = {}
 
 
+# Remember which profiles are out of quota, so the next job doesn't re-walk them.
+# Discovering "everything is exhausted" costs timeout x N profiles (~26 min for
+# six), which is far too slow to repeat per request.
+_QUOTA_CACHE = os.path.expanduser("~/.cache/gemini-web-api/quota.json")
+_QUOTA_TTL = float(os.getenv("GEMINI_QUOTA_CACHE_TTL", "10800"))  # 3h; quota is daily
+
+
+def _quota_cache_read() -> dict[str, float]:
+    try:
+        with open(_QUOTA_CACHE) as f:
+            data = _json.load(f)
+        now = time.time()
+        return {k: v for k, v in data.items() if isinstance(v, (int, float)) and v > now}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def mark_quota_exhausted(profile: str) -> None:
+    """Record that `profile` is out of media quota (expires after the TTL)."""
+    data = _quota_cache_read()
+    data[str(profile)] = time.time() + _QUOTA_TTL
+    try:
+        os.makedirs(os.path.dirname(_QUOTA_CACHE), exist_ok=True)
+        with open(_QUOTA_CACHE, "w") as f:
+            _json.dump(data, f)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _profile_candidates() -> list[str]:
     """Google profiles to try, current one first.
 
     Media generation has a PER-ACCOUNT daily quota, so an exhausted profile makes
     the whole request fail even though other signed-in accounts still work. Set
     GEMINI_AUTHUSER_FALLBACKS="0,1,2,5" to let jobs roll over automatically.
+
+    Profiles known to be out of quota are skipped — unless that would leave
+    nothing to try, in which case we ignore the cache rather than hard-fail on
+    stale data (quota may have reset).
     """
     from . import config
 
     cur = str(config.AUTHUSER or "0")
     raw = os.getenv("GEMINI_AUTHUSER_FALLBACKS", "").strip()
-    if not raw:
-        return [cur]
-    rest = [p.strip() for p in raw.split(",") if p.strip() and p.strip() != cur]
-    return [cur] + rest
+    order = [cur] if not raw else [cur] + [
+        p.strip() for p in raw.split(",") if p.strip() and p.strip() != cur
+    ]
+    known_bad = _quota_cache_read()
+    fresh = [p for p in order if p not in known_bad]
+    if fresh:
+        return fresh
+    # Every profile is flagged. Don't re-walk them all (timeout x N ~ 26 min for
+    # six) — probe just one, which is enough to notice the daily quota reset.
+    return order[:1]
 
 
 async def _switch_profile(manager, n: str) -> None:
@@ -334,6 +374,8 @@ async def _generate_with_failover(manager, job: dict, prompt: str):
                 return result
             except Exception as e:  # noqa: BLE001
                 last_exc = e
+                if _is_quota_failure(e):
+                    mark_quota_exhausted(prof)
                 if not _is_quota_failure(e) or i == len(candidates) - 1:
                     raise
                 job.setdefault("quota_exhausted", []).append(prof)
