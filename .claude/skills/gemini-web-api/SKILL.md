@@ -212,16 +212,36 @@ systemctl --user daemon-reload && systemctl --user enable --now gemini-cdp-chrom
 Each job downloads in its own tab keyed by `job_id`, so parallel jobs never collide.
 The same `GEMINI_CDP_URL` also auto-harvests cookies (§7).
 
-## 6. Profiles (u/N) and quotas — important
+## 6. Profiles (u/N) and quotas — mostly automatic now
 
 Chat is generous, but **image and video have a per-account daily quota**. The
 user has several Google accounts signed into Chrome, selected by `/u/N/`.
 
-**A video job that fails with `timed out after 600s` almost always means that
-profile's video quota is exhausted** — it stalls instead of erroring cleanly.
-(Observed: `u/1` produced videos earlier the same day, then began timing out.)
+**Video jobs switch profiles automatically.** `GEMINI_AUTHUSER_FALLBACKS` is
+configured, so a job tries the active profile, and on quota exhaustion silently
+rolls to the next one. The job result tells you what happened:
 
-To switch profiles, restart the server with a different `GEMINI_AUTHUSER`:
+```json
+{"status":"completed","authuser":"2","quota_exhausted":["1","0"]}
+```
+
+So **you normally do nothing** when a quota runs out. Check what's configured:
+
+```bash
+curl -s localhost:8100/v1/status     # active profile, failover list, bridge on/off
+$GW gemini-web-api-cli doctor        # same, in readable form
+```
+
+**A video job that times out means quota is exhausted on _every_ profile tried** —
+an exhausted account stalls rather than erroring cleanly. The error message names
+the profiles attempted. If that happens, Veo genuinely isn't available until the
+daily quota resets: say so plainly rather than silently substituting another tool.
+
+Timeout is `GEMINI_VIDEO_TIMEOUT` (240s here). A real generation finishes in
+~60–180s, so 240s is enough to detect exhaustion without burning 10 min per
+profile — important when failover walks several accounts.
+
+To change the *starting* profile manually, edit the env and restart the service:
 
 ```bash
 fuser -k 8100/tcp; sleep 1
@@ -229,22 +249,10 @@ GEMINI_AUTHUSER=2 nohup $GW gemini-web-api >/tmp/gemini-web-api.log 2>&1 &
 until curl -sf -m2 http://localhost:8100/health >/dev/null; do sleep 2; done
 ```
 
-Cycle `N = 0,1,2,…` until a profile still has quota. To find which profiles are
-signed in, start on each `N` and send a cheap **chat** request first — a working
-profile answers, an unused index errors — so you don't spend 10 minutes of video
-timeout on an account that isn't even logged in.
-
-**Probe faster:** the default video timeout is 600s, so each exhausted account
-costs 10 minutes. While hunting for a profile with quota, shorten it — a real
-generation finishes in ~60–180s, so 240s is plenty to tell "working" from
-"exhausted":
-
-```bash
-echo 'GEMINI_VIDEO_TIMEOUT=240' >> ~/.config/gemini-web-api/env
-systemctl --user restart gemini-web-api
-```
-
-Remove that line once you've found a good profile.
+To change which profiles are tried automatically (or their order), edit
+`GEMINI_AUTHUSER_FALLBACKS` (comma-separated, e.g. `0,1,2,3,5,6`) in the same env
+file and restart the service. To check whether a profile is even signed in, send
+it a cheap **chat** request — a working profile answers, an unused index errors.
 
 ## 7. Troubleshooting — "it doesn't work / no browser cookies"
 
