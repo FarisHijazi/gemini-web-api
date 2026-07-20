@@ -272,14 +272,87 @@ VIDEO_TIMEOUT = float(os.getenv("GEMINI_VIDEO_TIMEOUT", "600"))  # seconds
 JOBS: dict[str, dict] = {}
 
 
+def _profile_candidates() -> list[str]:
+    """Google profiles to try, current one first.
+
+    Media generation has a PER-ACCOUNT daily quota, so an exhausted profile makes
+    the whole request fail even though other signed-in accounts still work. Set
+    GEMINI_AUTHUSER_FALLBACKS="0,1,2,5" to let jobs roll over automatically.
+    """
+    from . import config
+
+    cur = str(config.AUTHUSER or "0")
+    raw = os.getenv("GEMINI_AUTHUSER_FALLBACKS", "").strip()
+    if not raw:
+        return [cur]
+    rest = [p.strip() for p in raw.split(",") if p.strip() and p.strip() != cur]
+    return [cur] + rest
+
+
+async def _switch_profile(manager, n: str) -> None:
+    """Point the shared client at Google profile u/N (drops the cached client)."""
+    import shutil
+
+    from . import config
+    from .account import apply_authuser
+
+    await manager.reset()
+    shutil.rmtree("/tmp/gemini_webapi", ignore_errors=True)
+    config.AUTHUSER = n
+    apply_authuser(n)
+
+
+def _is_quota_failure(exc: BaseException) -> bool:
+    """Quota exhaustion shows up either as an explicit message or as a stall.
+
+    An exhausted account frequently never finishes generating rather than
+    erroring cleanly, so a timeout counts as (probable) quota exhaustion.
+    """
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return True
+    return "quota" in str(exc).lower()
+
+
+async def _generate_with_failover(manager, job: dict, prompt: str):
+    """Try each candidate profile until one produces a video."""
+    from . import config
+
+    original = str(config.AUTHUSER or "0")
+    candidates = _profile_candidates()
+    last_exc: BaseException | None = None
+    try:
+        for i, prof in enumerate(candidates):
+            if prof != str(config.AUTHUSER or "0"):
+                await _switch_profile(manager, prof)
+            job["authuser"] = prof
+            try:
+                result = await asyncio.wait_for(
+                    generate_video_url(manager, prompt, timeout=VIDEO_TIMEOUT),
+                    timeout=VIDEO_TIMEOUT + 60,
+                )
+                job["tried_profiles"] = candidates[: i + 1]
+                return result
+            except Exception as e:  # noqa: BLE001
+                last_exc = e
+                if not _is_quota_failure(e) or i == len(candidates) - 1:
+                    raise
+                job.setdefault("quota_exhausted", []).append(prof)
+    finally:
+        # Leave the shared client on the profile that worked; if everything
+        # failed, restore the original so chat isn't left on a random account.
+        if last_exc is not None and job.get("authuser") != original and not job.get("file"):
+            try:
+                await _switch_profile(manager, original)
+            except Exception:  # noqa: BLE001
+                pass
+    raise last_exc  # pragma: no cover
+
+
 async def _run_job(manager, job_id: str, prompt: str, model, files):
     job = JOBS[job_id]
     job["status"] = "processing"
     try:
-        result = await asyncio.wait_for(
-            generate_video_url(manager, prompt, timeout=VIDEO_TIMEOUT),
-            timeout=VIDEO_TIMEOUT + 60,
-        )
+        result = await _generate_with_failover(manager, job, prompt)
         # The video is generated; expose its (valid, browser-playable) URL even
         # if the server-side fetch fails on the usercontent OSID auth wrinkle.
         job["download_url"] = result["download_url"]
@@ -295,9 +368,14 @@ async def _run_job(manager, job_id: str, prompt: str, model, files):
         except Exception as e:  # noqa: BLE001
             # generation succeeded; only the server-side download step didn't
             job["download_error"] = f"{type(e).__name__}: {e}"
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, TimeoutError):
         job["status"] = "failed"
-        job["error"] = f"timed out after {VIDEO_TIMEOUT:.0f}s"
+        tried = job.get("tried_profiles") or _profile_candidates()
+        job["error"] = (
+            f"timed out after {VIDEO_TIMEOUT:.0f}s on profile(s) {','.join(tried)} — "
+            "this almost always means the daily video quota is exhausted there. "
+            "Set GEMINI_AUTHUSER_FALLBACKS to more profiles, or try again tomorrow."
+        )
     except Exception as e:  # noqa: BLE001
         job["status"] = "failed"
         job["error"] = f"{type(e).__name__}: {e}"
