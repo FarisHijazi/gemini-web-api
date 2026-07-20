@@ -130,6 +130,27 @@ def _browser_ws_url(cdp_http: str) -> str:
         return json.load(r)["webSocketDebuggerUrl"]
 
 
+async def fetch_cookies(cdp_http: str, domain_suffix: str = "google.com") -> dict[str, str]:
+    """Harvest cookies (including httpOnly ones like __Secure-1PSID) over CDP.
+
+    Page JavaScript cannot read httpOnly cookies, but the DevTools
+    `Storage.getCookies` command returns the browser's full cookie store — so
+    pointing at a logged-in Chrome removes any need to copy cookies by hand.
+    """
+    ws_url = await asyncio.get_event_loop().run_in_executor(None, _browser_ws_url, cdp_http)
+    async with websockets.connect(ws_url, max_size=None, open_timeout=10) as ws:
+        cdp = _CDP(ws)
+        try:
+            res = await cdp.send("Storage.getCookies", {})
+            out: dict[str, str] = {}
+            for c in res.get("cookies", []):
+                if domain_suffix in (c.get("domain") or ""):
+                    out[c["name"]] = c["value"]
+            return out
+        finally:
+            cdp.close()
+
+
 async def fetch_video_bytes(cdp_http: str, page_url: str, video_url: str,
                             timeout: float = 90.0) -> bytes:
     """Download a finished-video URL through a logged-in Chrome via CDP.

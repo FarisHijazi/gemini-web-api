@@ -51,6 +51,38 @@ def _cookie_stores() -> list[str]:
     return paths
 
 
+def cookies_via_cdp() -> dict[str, str]:
+    """Pull the `.google.com` cookie jar from a logged-in Chrome over CDP.
+
+    Used automatically when the local Chrome cookie store can't be read (remote/
+    headless host, encrypted store with a locked keyring, a Chrome that isn't the
+    one this process can see). Requires GEMINI_CDP_URL to point at a Chrome
+    started with `--remote-debugging-port`. Returns {} when unavailable.
+
+    Runs the async CDP call on its own loop in a worker thread so this stays
+    callable from sync code even while a server event loop is running.
+    """
+    if not CDP_URL:
+        return {}
+    import asyncio
+    import threading
+
+    box: dict[str, dict[str, str]] = {}
+
+    def _run() -> None:
+        try:
+            from .video_bridge import fetch_cookies
+
+            box["jar"] = asyncio.run(fetch_cookies(CDP_URL))
+        except Exception:  # noqa: BLE001
+            box["jar"] = {}
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    t.join(30)
+    return box.get("jar", {})
+
+
 def get_cookies() -> tuple[str | None, str | None]:
     """Return (secure_1psid, secure_1psidts).
 
@@ -82,6 +114,11 @@ def get_cookies() -> tuple[str | None, str | None]:
             best = found
         if all(k in found for k in wanted):
             break
+    if not best.get("__Secure-1PSID"):
+        # Local store unreadable — try a logged-in Chrome over CDP instead.
+        jar = cookies_via_cdp()
+        if jar.get("__Secure-1PSID"):
+            return jar.get("__Secure-1PSID"), jar.get("__Secure-1PSIDTS")
     return best.get("__Secure-1PSID"), best.get("__Secure-1PSIDTS")
 
 
@@ -110,7 +147,8 @@ def get_full_jar() -> dict[str, str]:
         }
         if "__Secure-1PSID" in jar:
             return jar
-    return {}
+    # Local store unreadable — fall back to a logged-in Chrome over CDP.
+    return cookies_via_cdp()
 
 
 # --------------------------------------------------------------------------- #
