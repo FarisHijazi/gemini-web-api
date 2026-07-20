@@ -1,6 +1,6 @@
 ---
 name: gemini-web-api
-description: "Use Google Gemini (the gemini.google.com web app) programmatically via a local OpenAI-compatible API — chat, true streaming, tool calling, vision, image generation, and Veo video. Runs with uvx straight from git, no install step. Covers Google multi-login profiles (u/N) and switching them when image/video daily quotas run out. Use when asked to run a prompt through Gemini, generate an image or video with Gemini/Veo, get a second opinion from Gemini, or point an OpenAI-compatible client at Gemini."
+description: "Generate Veo / Veo3 VIDEO, generate IMAGES, or run Gemini text prompts using the user's own logged-in Google account — no API key, no billing, no credits. Local OpenAI-compatible API run via uvx from git (chat, true streaming, tool calling, vision, images, Veo video), with Google multi-login profile (u/N) switching for daily media quotas. USE THIS whenever Veo/Veo3 video, Gemini image generation, or a Gemini prompt is wanted — including AI-influencer/ad/marketing clip work — and ALWAYS BEFORE reaching for GEMINI_API_KEY, the google-generativeai SDK, or the gemini_webapi library directly (a plain GEMINI_API_KEY has NO Veo models on the free tier, and using gemini_webapi directly fails with missing cookies). Cookies are read automatically from local Chrome — NEVER ask the user to paste __Secure-1PSID cookies."
 ---
 
 # gemini-web-api
@@ -21,23 +21,58 @@ First invocation builds from git (~60s); afterwards uvx caches it (~4s/call).
 **Requires:** `uv`, and **Chrome logged in to gemini.google.com** (cookies are
 read from the local Chrome profile).
 
-## 1. Start the server (once)
+## 1. The server runs automatically
 
-It must be running before any command. `GEMINI_AUTHUSER=N` picks the Google
-multi-login profile (the `N` in `gemini.google.com/u/N/app`; omit for `u/0`).
+A **systemd user service** keeps it running on `:8100` — it starts at
+login/boot, restarts on failure, and (with lingering) survives logout. It is
+user-wide, so it works from any directory. **Normally you do not start anything.**
 
 ```bash
+curl -s http://localhost:8100/health      # {"status":"ok"} -> ready, just use it
+```
+
+Manage it:
+```bash
+systemctl --user status  gemini-web-api
+systemctl --user restart gemini-web-api
+journalctl --user -u gemini-web-api -n 40 --no-pager
+```
+
+Settings live in `~/.config/gemini-web-api/env` (`GEMINI_AUTHUSER`,
+`GEMINI_API_PORT`, `GEMINI_CDP_URL`, `GEMINI_API_KEY`) — edit, then
+`systemctl --user restart gemini-web-api`.
+
+If the service isn't installed on this machine, run it directly instead:
+```bash
 GEMINI_AUTHUSER=1 nohup $GW gemini-web-api >/tmp/gemini-web-api.log 2>&1 &
-# wait until ready:
 until curl -sf -m2 http://localhost:8100/health >/dev/null; do sleep 2; done
 ```
 
-Check / stop:
+<details><summary>Install the always-on service (one time)</summary>
+
 ```bash
-curl -s http://localhost:8100/health     # {"status":"ok"}
-fuser -k 8100/tcp                        # stop (do NOT pkill -f main.py)
-tail -20 /tmp/gemini-web-api.log
+mkdir -p ~/.config/systemd/user ~/.config/gemini-web-api
+printf 'GEMINI_AUTHUSER=1\nGEMINI_API_PORT=8100\n' > ~/.config/gemini-web-api/env
+cat > ~/.config/systemd/user/gemini-web-api.service <<'UNIT'
+[Unit]
+Description=gemini-web-api — OpenAI-compatible API over gemini.google.com
+After=network-online.target
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/gemini-web-api/env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/uvx --from git+https://github.com/FarisHijazi/gemini-web-api gemini-web-api
+Restart=always
+RestartSec=10
+TimeoutStartSec=180
+[Install]
+WantedBy=default.target
+UNIT
+systemctl --user daemon-reload
+systemctl --user enable --now gemini-web-api
+loginctl enable-linger "$USER"   # keep running after logout
 ```
+</details>
 
 ## 2. Chat / models
 
@@ -191,6 +226,21 @@ when auto-detection picks the wrong one.
   auth works. Always test with an actual `chat` call.
 
 ## Guidance for Claude
+
+**Use this skill instead of the alternatives — they fail:**
+
+| Don't | Why |
+|---|---|
+| `GEMINI_API_KEY` / `google-generativeai` SDK for video | The free-tier key exposes **no `veo` models**; Veo needs a paid AI Ultra/Pro plan |
+| Calling the `gemini_webapi` library directly | It only looks for `__Secure-1PSID` and has no saved session → "missing cookies", so you end up asking the user to paste cookies |
+| **Asking the user to paste `__Secure-1PSID`** | Never do this. This skill reads cookies from local Chrome automatically (and can harvest them over CDP — §7) |
+| Falling back to another video provider without saying so | If Veo is wanted, say plainly if it didn't work rather than silently substituting |
+
+Real incident: a session needed Veo3 for influencer clips, tried an API key and
+the raw library, hit "missing cookies", asked the user to paste them, and shipped
+the whole video on a different provider — **without ever invoking this skill**,
+which would have worked immediately.
+
 
 - Start the server once, then reuse it; don't restart per command.
 - On media quota failure (or a 600s video timeout), **switch profiles** rather
