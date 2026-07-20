@@ -135,15 +135,39 @@ a logged-in browser.
 ### Real video downloads (browser bridge)
 
 The MP4 host needs a per-host, per-account `OSID` cookie only Chrome mints, so a
-plain server GET 403s. Opt in by giving the server a Chrome debug port:
+plain server GET 403s. The fix is to give the server a Chrome DevTools port.
+
+> ⚠️ **The obvious command silently does nothing if Chrome is already running.**
+> `google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.config/google-chrome"`
+> just prints `Opening in existing browser session` — the flag is ignored and
+> **port 9222 never opens**. Always verify:
+> `curl -s http://localhost:9222/json/version`
+
+**Working recipe — a second, logged-in Chrome that doesn't disturb the user's:**
+copy only the auth files (a few MB, not the multi-GB profile) and run headless.
 
 ```bash
-google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.config/google-chrome"
-GEMINI_CDP_URL=http://localhost:9222 GEMINI_AUTHUSER=1 nohup $GW gemini-web-api \
-  >/tmp/gemini-web-api.log 2>&1 &
+DEST=/tmp/gcdp-profile
+rm -rf "$DEST"; mkdir -p "$DEST/Default"
+cp ~/.config/google-chrome/"Local State" "$DEST/Local State"
+for f in Cookies "Login Data" Preferences "Secure Preferences"; do
+  cp ~/.config/google-chrome/Default/"$f" "$DEST/Default/$f" 2>/dev/null
+done
+google-chrome --headless=new --remote-debugging-port=9222 --user-data-dir="$DEST" \
+  --no-first-run --no-default-browser-check about:blank >/tmp/gcdp.log 2>&1 &
+curl -s http://localhost:9222/json/version    # must return JSON
+```
+
+Same machine + same keyring ⇒ the copy stays logged in (verified: 39 Google
+cookies incl. `__Secure-1PSID` readable over CDP). Then point the server at it:
+
+```bash
+# service: set GEMINI_CDP_URL in ~/.config/gemini-web-api/env, then
+systemctl --user restart gemini-web-api
 ```
 
 Each job downloads in its own tab keyed by `job_id`, so parallel jobs never collide.
+The same `GEMINI_CDP_URL` also auto-harvests cookies (§7).
 
 ## 6. Profiles (u/N) and quotas — important
 
