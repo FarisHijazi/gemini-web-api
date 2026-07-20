@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 gemini-web-api = "gemini_openai.server:run"
+gemini-web-api-cli = "gemini_openai.cli:main"
 
 [build-system]
 requires = ["hatchling"]
