@@ -273,14 +273,46 @@ async def images_generations(body: dict, _=Depends(check_key)):
         raise HTTPException(status_code=400, detail="prompt required")
     model = config.resolve_model(body.get("model"))
     instruction = f"Generate an image: {prompt}"
-    output = await manager.generate(instruction, model=model, temporary=True)
-    images = getattr(output, "images", []) or []
-    if not images:
-        raise HTTPException(status_code=502, detail="model returned no image")
-    data = [{"url": img.url, "revised_prompt": getattr(img, "title", None)} for img in images if getattr(img, "url", None)]
-    if not data:
-        raise HTTPException(status_code=502, detail="model returned no image url")
-    return {"created": int(time.time()), "data": data}
+
+    # Image generation also has a per-account daily quota: an exhausted profile
+    # replies with text ("come back tomorrow…") and no image. Walk the configured
+    # fallback profiles the same way video jobs do.
+    original = str(config.AUTHUSER or "0")
+    candidates = video_mod._profile_candidates()
+    tried: list[str] = []
+    last_text = ""
+    for prof in candidates:
+        if prof != str(config.AUTHUSER or "0"):
+            await video_mod._switch_profile(manager, prof)
+        tried.append(prof)
+        output = await manager.generate(instruction, model=model, temporary=True)
+        data = [
+            {"url": img.url, "revised_prompt": getattr(img, "title", None)}
+            for img in (getattr(output, "images", []) or [])
+            if getattr(img, "url", None)
+        ]
+        if data:
+            return {
+                "created": int(time.time()),
+                "data": data,
+                "authuser": prof,
+                "quota_exhausted": tried[:-1] or None,
+            }
+        last_text = (output.text or "").strip()
+
+    # Nothing worked — restore the starting profile and explain why.
+    if str(config.AUTHUSER or "0") != original:
+        try:
+            await video_mod._switch_profile(manager, original)
+        except Exception:  # noqa: BLE001
+            pass
+    raise HTTPException(
+        status_code=502,
+        detail=(
+            f"no image from profile(s) {','.join(tried)} — usually the daily image "
+            f"quota. Model said: {last_text[:200] or '(nothing)'}"
+        ),
+    )
 
 
 # --------------------------------------------------------------------------- #
