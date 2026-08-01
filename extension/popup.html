@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8" />
+<style>
+  body { font: 13px system-ui, sans-serif; width: 260px; padding: 12px; margin: 0; }
+  h1 { font-size: 14px; margin: 0 0 8px; }
+  code { background: #eee; padding: 1px 4px; border-radius: 3px; }
+  ol { margin: 6px 0 0; padding-left: 18px; }
+  li { margin: 4px 0; }
+</style>
+<h1>Gemini Chrome Bridge</h1>
+<p>Relays this logged-in tab to the gemini-web-api OpenAI endpoint (chrome backend).</p>
+<ol>
+  <li>Run the server: <code>GEMINI_BACKEND=chrome uv run gemini-web-api</code></li>
+  <li>Keep a <b>gemini.google.com</b> tab open.</li>
+  <li>Point clients at <code>http://localhost:8100/v1</code></li>
+</ol>
+<p>Check <code>localhost:8100/health</code> — <code>extension_connected</code> should be <b>true</b>.</p>

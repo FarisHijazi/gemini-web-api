@@ -18,6 +18,14 @@ from gemini_webapi.constants import Model
 # --------------------------------------------------------------------------- #
 HOST = os.getenv("GEMINI_API_HOST", "0.0.0.0")
 PORT = int(os.getenv("GEMINI_API_PORT", "8100"))
+# Chat-backend preference (both backends always load; this only decides routing):
+#   "auto" (default) — use the Chrome extension for chat when a tab is connected,
+#            otherwise fall back to the cookie/CDP gemini_webapi library.
+#   "webapi" — always the cookie backend (chat + images + Veo video).
+#   "chrome" — always the extension for chat (errors if no tab is connected).
+# Media generation (images/video) always uses the cookie backend regardless, so a
+# single server serves chat-via-extension AND cookie-based media at once.
+BACKEND = os.getenv("GEMINI_BACKEND", "auto").strip().lower()
 # Optional bearer token clients must present. Empty => no auth enforced.
 API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Google multi-login account index (the N in gemini.google.com/u/N/app).

@@ -12,12 +12,45 @@ GEMINI_AUTHUSER=6 uv run --active python main.py   # target Google account u/6
 ```
 Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell).
 
+## Two backends, one server (`GEMINI_BACKEND`)
+
+Both backends **always load**; `server.py:pick_manager()` routes each chat request
+(the media endpoints always use `webapi_manager`). Both expose the same interface
+(`.generate` / `.generate_stream`):
+
+- `webapi_manager` — `gemini_pool.GeminiManager` over `gemini_webapi` cookies.
+  Full-featured (chat, streaming, tools, vision, images, Veo video).
+- `chrome_manager` — `chrome_backend.ChromeManager`: relays chat **and media** to a
+  **Chrome extension** (in [`extension/`](extension/)) driving logged-in
+  gemini.google.com tabs over a WebSocket (`/ws`, always registered via
+  `register_ws(app)`). Auth = the browser's own session (no cookie
+  harvesting/expiry). Since 2026-08-01 the hub is a **parallel tab pool**: every
+  tab is a worker (per-tab IDs, strict `authuser` routing for images, retry-once
+  on tab death, self-reloading extension, stale-tab auto-refresh, **per-account
+  media lock** — Gemini web runs max ONE image gen per account — and **media
+  account auto-failover** with quota cooldowns, env-tunable via
+  `GEMINI_MEDIA_{ATTEMPT_TIMEOUT,QUOTA_COOLDOWN,EXCLUDE_AUTHUSERS}`). See devlog
+  `claude_2026-08-01-parallel-tab-pool.md`.
+
+`config.BACKEND` is a **preference**: `auto` (default — extension for chat AND
+images when a tab is connected, else cookies; vision/video always cookies),
+`webapi` (always cookies), `chrome` (always extension). Images via the extension
+are the only reliable byte-path — Google 403s every server-side download of
+`lh3 gg-dl` URLs (session-locked); the extension grabs bytes in-page and the
+server serves them from `/files/`. Why an extension not injection:
+page CSP blocks a page-context WS to localhost; a content script's isolated world
+isn't governed by it. Test: `tests/chrome_backend_test.py` (19 checks incl.
+auto-routing).
+
 ## Architecture (narrow-waist)
 
 - `gemini_openai/config.py` — **single source of truth** for settings, cookie
-  extraction (`get_cookies`, `get_full_jar`), and model-name → `Model` mapping.
+  extraction (`get_cookies`, `get_full_jar`), model-name → `Model` mapping, and
+  `BACKEND` selection.
 - `gemini_openai/gemini_pool.py` — one shared, auto-refreshing `GeminiClient`
-  (`manager`), re-inits on `AuthError`.
+  (`manager`), re-inits on `AuthError`. The `webapi` backend.
+- `gemini_openai/chrome_backend.py` — the `chrome` backend: `ChromeManager` +
+  WebSocket hub + `/ws` route, same manager interface as `gemini_pool`.
 - `gemini_openai/account.py` — Google multi-login: `/u/N/` endpoint routing +
   full-cookie-jar auth. Patches `gemini_webapi` via `sys.modules` (see devlog:
   the `utils.get_access_token` name resolves to a function, not the module).

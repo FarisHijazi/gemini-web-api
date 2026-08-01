@@ -11,6 +11,51 @@ maintained [`gemini_webapi`](https://github.com/HanaokaYuzu/Gemini-API) library;
 this project adds the OpenAI-compatible HTTP layer, robust multi-account auth,
 and media generation.
 
+## Two backends, one server
+
+The **same running server** can talk to Gemini two ways, and uses both at once:
+
+| Backend | How it talks to Gemini | Auth | Handles |
+|---|---|---|---|
+| `webapi` | reverse-engineered `batchexecute` RPC via [`gemini_webapi`](https://github.com/HanaokaYuzu/Gemini-API), cookies from local Chrome / CDP | cookies (`__Secure-1PSID`, …) — can expire | chat, streaming, tools, vision, **images, Veo video** |
+| `chrome` | a **Chrome extension** drives a logged-in `gemini.google.com` tab (types prompt, scrapes reply); server relays over a WebSocket (`/ws`) | **the browser's own session** — nothing to harvest or expire | chat, streaming |
+
+`GEMINI_BACKEND` is a **preference, not a hard switch** — both backends always
+load:
+
+- **`auto`** *(default)* — chat uses the **extension when a tab is connected**,
+  else falls back to **cookies**. Vision/file input and **images/video always use
+  the cookie backend** (the extension can't produce them). So one server serves
+  chat-via-extension *and* cookie-based media simultaneously.
+- **`webapi`** — always cookies.
+- **`chrome`** — always the extension for chat (errors if no tab is connected).
+
+The `chrome` path exists because cookie auth is fragile (profiles go stale,
+`__Secure-1PSID` expires, Veo downloads need a CDP bridge). When the extension
+runs inside your logged-in tab, **if the tab can chat, so can the API**.
+
+### Enabling the extension
+
+1. Start the server normally (`auto` picks up the extension once it connects):
+   ```bash
+   uv run gemini-web-api            # serves :8100, /ws always available
+   ```
+2. Load the extension (one time — "Load unpacked" is a native OS picker):
+   `chrome://extensions` → **Developer mode** on → **Load unpacked** → select the
+   [`extension/`](extension/) folder.
+3. Keep a `gemini.google.com` tab open and logged in. Verify:
+   ```bash
+   curl -s localhost:8100/health
+   # -> "backend_mode":"auto","active_backend":"chrome","extension_connected":true
+   ```
+
+**Why an extension (not an injected script):** `gemini.google.com`'s CSP blocks a
+page-context WebSocket to `localhost`. A content script runs in an isolated world
+the page CSP doesn't govern, so its socket connects. Architecture and the WS
+protocol are documented at the top of [`gemini_openai/chrome_backend.py`](gemini_openai/chrome_backend.py).
+
+**Chrome-backend limits:** one tab = one worker (chat requests serialized).
+
 ## Features
 
 | Capability | Status |

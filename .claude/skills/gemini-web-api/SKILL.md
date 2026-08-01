@@ -115,22 +115,55 @@ client.chat.completions.create(model="gemini-3-flash",
 Supports `tools`/`tool_calls` (emulated function calling, `finish_reason:
 "tool_calls"`), vision input (images in messages), and multi-turn.
 
-## 4. Images — URL only, browser-viewable
+## 4. Images — REAL downloads via the Chrome-extension tab pool
+
+**The extension backend is the only way to get image BYTES**, and since
+2026-08-01 it is a full parallel tab pool with per-account auto-failover.
+Background: `lh3.googleusercontent.com/gg-dl/...` URLs are session-locked —
+a server-side GET 403s **even with the full cookie jar on the very first hit**,
+and an in-page `fetch()` is CORS-blocked. The extension grabs the rendered
+image *inside* the Gemini tab and the server re-serves it from `/files/`.
+
+Setup (once per Chrome session): load `extension/` (unpacked, MV3) and open one
+`gemini.google.com/u/N/app` tab per Google account you want as a worker. Each
+tab registers with the server; check with:
 
 ```bash
-$GW gemini-web-api-cli image "a red fox in the snow, cinematic"
+curl -s localhost:8100/v1/status   # "tabs": one row per worker (authuser, busy)
+                                   # "media_quota_cooldown": accounts being skipped
 ```
 
-Prints an `lh3.googleusercontent.com` URL.
+Generate (any OpenAI images client, or curl):
 
-**You cannot download that URL from a script.** Verified: a server-side GET
-returns **403 even with the full cookie jar on the very first hit** (an auth
-wall, not a single-use link), and an in-page `fetch()` is **CORS-blocked**.
+```bash
+curl -s -X POST localhost:8100/v1/images/generations -H 'Content-Type: application/json' \
+  -d '{"prompt":"...", "authuser":"2"}'   # authuser optional — pins the FIRST account tried
+# -> {"data":[{"url":"http://localhost:8100/files/<id>.png"}], "authuser":"3", ...}
+```
 
-- To view it: open the URL in the Chrome profile that generated it (it renders
-  fine), or look at the image in the Gemini conversation.
-- **Never** `curl`/`wget` it and report the image as saved — you get a 403 HTML
-  page, not a PNG. Always verify bytes (`file`, size) before claiming a download.
+Then download the `/files/` URL and **verify bytes** (`file` says PNG, not HTML).
+
+Semantics you must know (all empirically established):
+- **Accounts auto-fail-over.** A quota-dead account is detected, put in a 30-min
+  cooldown (`GEMINI_MEDIA_QUOTA_COOLDOWN`), and the request walks to the next
+  account with a tab. The response's `authuser` says who actually served it.
+- **Per-account image concurrency is 1** (Gemini web silently starves the loser
+  of two concurrent generations). The server serializes per account —
+  parallelism comes from tabs on *different* accounts.
+- **Quota exhaustion stalls silently** (no error in the UI) — it surfaces as a
+  render-timeout, indistinguishable from a slow generation. Attempts after the
+  first use `GEMINI_MEDIA_ATTEMPT_TIMEOUT` (180s) so dead accounts don't burn
+  the whole budget. Note: **Pro-tier accounts generate slower** and can exceed
+  that cap — pin them via `authuser` (first attempt gets the full timeout).
+- `GEMINI_MEDIA_EXCLUDE_AUTHUSERS` (comma-separated indices, default empty)
+  hard-bans accounts from media.
+- The extension self-manages: idle worker tabs auto-refresh (a ~10-min-idle tab
+  fails every job), the first-use "Keep in mind / Got it" notice is auto-dismissed
+  even when it pops mid-response, and `POST /v1/extension/reload` remotely
+  reloads + re-injects the extension (a full Chrome restart also works).
+
+The CLI one-liner (`$GW gemini-web-api-cli image "..."`) still exists but only
+prints the locked lh3 URL — use the server + pool for actual files.
 
 ## 5. Videos (Veo) — async job
 
@@ -158,11 +191,20 @@ curl -s http://localhost:9222/json/version    # JSON => bridge available
 systemctl --user status gemini-cdp-chrome
 ```
 
-How it works (and why it's safe): on every start it rebuilds a **minimal copy**
-of the real Chrome profile — only `Local State` + `Default/{Cookies, Login Data,
-Preferences, Secure Preferences}`, a few MB, not the multi-GB profile — so it is
-signed in with fresh cookies **without touching the user's browser**. Verified:
-39 Google cookies incl. `__Secure-1PSID` readable over CDP.
+How it works: on every start it rebuilds a **minimal copy** of the real Chrome
+profile — only `Local State` + `Default/{Cookies, Login Data, Preferences,
+Secure Preferences}`, a few MB, not the multi-GB profile — so it is signed in
+with fresh cookies. Verified: 39 Google cookies incl. `__Secure-1PSID` readable
+over CDP.
+
+> ⚠️ **"Without touching the user's browser" turned out to be FALSE in practice.**
+> Twice (2026-07-31 via cookie clients, 2026-08-01 evening suspected via this very
+> service) a second session sharing the profile's `__Secure-1PSID` rotated
+> `__Secure-1PSIDTS` and **signed the user's desktop Chrome out of Google
+> entirely** — they had to re-log-in every account, and the `/u/N/` account
+> indices RESHUFFLED afterwards (see §6). Treat this service as risky: keep it
+> stopped unless a video download actually needs it, and warn the user before
+> starting it.
 
 > ⚠️ **Never try to enable it by hand with**
 > `google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.config/google-chrome"`.
@@ -216,6 +258,13 @@ The same `GEMINI_CDP_URL` also auto-harvests cookies (§7).
 
 Chat is generous, but **image and video have a per-account daily quota**. The
 user has several Google accounts signed into Chrome, selected by `/u/N/`.
+
+> ⚠️ **`/u/N/` indices are NOT stable.** They are the Google multi-login order,
+> and they RESHUFFLE whenever the user signs out/in (observed 2026-08-01: the
+> work account moved u/4 → u/7, silently invalidating an index-based exclusion).
+> After any sign-in/out event, re-map indices by opening
+> `myaccount.google.com/u/N/` for each N (the page shows name + email) before
+> trusting `GEMINI_AUTHUSER*` or `GEMINI_MEDIA_EXCLUDE_AUTHUSERS` values.
 
 **Video jobs switch profiles automatically.** `GEMINI_AUTHUSER_FALLBACKS` is
 configured, so a job tries the active profile, and on quota exhaustion silently
@@ -331,9 +380,14 @@ which would have worked immediately.
 
 
 - Start the server once, then reuse it; don't restart per command.
+- For images, prefer the **extension tab pool** (§4): open one
+  `gemini.google.com/u/N/app` tab per account and let the server's auto-failover
+  pick accounts — don't hand-roll retry loops.
 - On media quota failure (or a 600s video timeout), **switch profiles** rather
-  than retrying the same one.
+  than retrying the same one (the image path now does this itself).
 - Chat returning a 500 / API error `1097` means a stale session — the server
   self-heals on retry; if it persists, restart it.
+- After the user signs in/out of Google, **re-map the `/u/N/` indices** (§6)
+  before trusting any account-index config, and reload the worker tabs.
 - Never claim an image or video file was downloaded without verifying real bytes
   on disk.

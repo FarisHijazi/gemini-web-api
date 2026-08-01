@@ -123,8 +123,9 @@ def _decode_escapes(blob: str) -> str:
     return re.sub(r"\\+u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), blob).replace("\\/", "/")
 
 
-def _build_video_inner(prompt: str, metadata, uid: str, aspect: int) -> list:
-    mc = [prompt, 0, None, None, None, None, 0, None, None, VIDEO_TOOL]
+def _build_video_inner(prompt: str, metadata, uid: str, aspect: int, file_data=None) -> list:
+    # message_content[3] carries uploaded reference frames (image-to-video); None = text-only.
+    mc = [prompt, 0, None, file_data, None, None, 0, None, None, VIDEO_TOOL]
     inner = [None] * 69
     inner[0] = mc
     inner[1] = ["en"]
@@ -140,14 +141,14 @@ def _build_video_inner(prompt: str, metadata, uid: str, aspect: int) -> list:
     return inner
 
 
-async def _send_raw_video_request(client, metadata, prompt: str, aspect: int) -> str:
+async def _send_raw_video_request(client, metadata, prompt: str, aspect: int, file_data=None) -> str:
     """POST the video StreamGenerate over the library's session; return raw text.
 
     Returns quickly with a "Creating your video…" pending state (the finished
     video is fetched later via read_chat polling).
     """
     uid = str(uuid.uuid4()).upper()
-    inner = _build_video_inner(prompt, metadata, uid, aspect)
+    inner = _build_video_inner(prompt, metadata, uid, aspect, file_data)
     freq = _json.dumps([None, _json.dumps(inner)])
     endpoint = str(_gclient.Endpoint.GENERATE)  # already /u/N-prefixed by account.py
     params = {"hl": "en", "_reqid": str(uuid.uuid4().int % 900000 + 100000), "rt": "c",
@@ -203,7 +204,25 @@ async def _poll_video_url(client, cid: str, timeout: float, interval: float = 8.
     raise TimeoutError("video did not finish generating in time")
 
 
-async def generate_video_url(manager, prompt: str, aspect: int = 16, timeout: float = 300.0) -> dict:
+async def _upload_reference_frames(client, files) -> list | None:
+    """Upload reference images and return the `file_data` shape Gemini expects.
+
+    Same construction gemini_webapi.client uses for chat attachments:
+    `[[[uploaded_url], filename], ...]`. Returns None when there is nothing to
+    attach, which keeps the text-to-video path byte-identical to before.
+    """
+    if not files:
+        return None
+    from gemini_webapi.utils import parse_file_name, upload_file
+
+    urls = await asyncio.gather(*(
+        upload_file(f, client=client.client, push_id=client.push_id) for f in files
+    ))
+    return [[[u], parse_file_name(f)] for u, f in zip(urls, files)]
+
+
+async def generate_video_url(manager, prompt: str, aspect: int = 16, timeout: float = 300.0,
+                             files=None) -> dict:
     """Full pipeline → returns {"download_url", "cid"} for a finished video.
 
     1. Prime a conversation (video only works as a follow-up turn — a fresh
@@ -220,7 +239,8 @@ async def generate_video_url(manager, prompt: str, aspect: int = 16, timeout: fl
     if not cid or not chat.metadata:
         raise RuntimeError("failed to open a conversation for video generation")
 
-    await _send_raw_video_request(client, chat.metadata, prompt, aspect)
+    file_data = await _upload_reference_frames(client, files)
+    await _send_raw_video_request(client, chat.metadata, prompt, aspect, file_data)
     url = await _poll_video_url(client, cid, timeout=timeout)
     return {"download_url": url, "cid": cid}
 
@@ -353,7 +373,7 @@ def _is_quota_failure(exc: BaseException) -> bool:
     return "quota" in str(exc).lower()
 
 
-async def _generate_with_failover(manager, job: dict, prompt: str):
+async def _generate_with_failover(manager, job: dict, prompt: str, files=None, aspect: int = 16):
     """Try each candidate profile until one produces a video."""
     from . import config
 
@@ -367,7 +387,8 @@ async def _generate_with_failover(manager, job: dict, prompt: str):
             job["authuser"] = prof
             try:
                 result = await asyncio.wait_for(
-                    generate_video_url(manager, prompt, timeout=VIDEO_TIMEOUT),
+                    generate_video_url(manager, prompt, aspect=aspect, timeout=VIDEO_TIMEOUT,
+                                       files=files),
                     timeout=VIDEO_TIMEOUT + 60,
                 )
                 job["tried_profiles"] = candidates[: i + 1]
@@ -390,11 +411,11 @@ async def _generate_with_failover(manager, job: dict, prompt: str):
     raise last_exc  # pragma: no cover
 
 
-async def _run_job(manager, job_id: str, prompt: str, model, files):
+async def _run_job(manager, job_id: str, prompt: str, model, files, aspect: int = 16):
     job = JOBS[job_id]
     job["status"] = "processing"
     try:
-        result = await _generate_with_failover(manager, job, prompt)
+        result = await _generate_with_failover(manager, job, prompt, files, aspect)
         # The video is generated; expose its (valid, browser-playable) URL even
         # if the server-side fetch fails on the usercontent OSID auth wrinkle.
         job["download_url"] = result["download_url"]
@@ -423,8 +444,8 @@ async def _run_job(manager, job_id: str, prompt: str, model, files):
         job["error"] = f"{type(e).__name__}: {e}"
 
 
-def create_job(manager, prompt: str, model, files) -> str:
+def create_job(manager, prompt: str, model, files, aspect: int = 16) -> str:
     job_id = "vid_" + uuid.uuid4().hex[:20]
     JOBS[job_id] = {"status": "queued", "prompt": prompt, "created": True}
-    asyncio.create_task(_run_job(manager, job_id, prompt, model, files))
+    asyncio.create_task(_run_job(manager, job_id, prompt, model, files, aspect))
     return job_id
