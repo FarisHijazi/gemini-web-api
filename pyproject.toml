@@ -7,7 +7,12 @@ requires-python = ">=3.12"
 dependencies = [
     "browser-cookie3>=0.20.1",
     "fastapi>=0.139.0",
-    "gemini-webapi>=2.0.0",
+    # <2.1 is load-bearing: 2.1.0 renamed the Model.*_THINKING tiers this
+    # package maps to (see config.py MODEL_ALIASES) to *_LITE, so importing
+    # config.py raises AttributeError. Without the upper bound, install paths
+    # that ignore uv.lock -- the README's `uvx` one-liner among them -- resolve
+    # the newer release and crash on startup.
+    "gemini-webapi>=2.0.0,<2.1",
     "httpx>=0.27.0",
     "json-repair>=0.61.2",
     "pydantic>=2.0",

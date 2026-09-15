@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import glob
 import os
+import sys
 
 from gemini_webapi.constants import Model
 
@@ -37,7 +38,21 @@ AUTHUSER = os.getenv("GEMINI_AUTHUSER", "") or None
 # and just return the browser-playable download_url.
 CDP_URL = os.getenv("GEMINI_CDP_URL", "") or None
 
-CHROME_DIR = os.path.expanduser("~/.config/google-chrome")
+
+def _default_chrome_dir() -> str:
+    """Chrome's user-data directory for this platform.
+
+    macOS and Windows do not use the Linux path, and cookie discovery silently
+    returns nothing when it is wrong.
+    """
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/Google/Chrome")
+    if os.name == "nt":
+        return os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\User Data")
+    return os.path.expanduser("~/.config/google-chrome")
+
+
+CHROME_DIR = os.getenv("GEMINI_CHROME_DIR") or _default_chrome_dir()
 
 
 # --------------------------------------------------------------------------- #
