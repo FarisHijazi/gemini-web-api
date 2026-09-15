@@ -44,6 +44,26 @@ VIDEO_MODEL = {
     "model_header": {"x-goog-ext-525001261-jspb": _video_header("00000000-0000-0000-0000-000000000000")},
 }
 
+# Width of the library's generate payload (`inner_req_list`). It was 69 in
+# gemini-webapi 2.0 and 81 in 2.1, and we both patch one (the video tool flag
+# below) and hand-build one (_build_video_inner), so learn the current width
+# from whatever the library actually serializes rather than pinning a number
+# that goes stale silently. 69 is the floor, and the indices we touch are all
+# below it, so both widths are safe.
+_INNER_LEN_FLOOR = 69
+_inner_len = _INNER_LEN_FLOOR
+
+
+def _is_generate_payload(obj) -> bool:
+    """A generate request: a wide list whose first element is message content."""
+    return (
+        isinstance(obj, list)
+        and len(obj) >= _INNER_LEN_FLOOR
+        and bool(obj)
+        and isinstance(obj[0], list)
+    )
+
+
 _video_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar("gemini_video_mode", default=False)
 # Aspect ratio code: 16 = 16:9 landscape (default), 9 = 9:16 portrait, 1 = 1:1.
 _video_ctx_aspect: contextvars.ContextVar[int] = contextvars.ContextVar("gemini_video_aspect", default=16)
@@ -59,12 +79,12 @@ class _JsonProxy:
         return getattr(self._real, name)
 
     def dumps(self, obj, *args, **kwargs):
-        if (
-            _video_ctx.get()
-            and isinstance(obj, list)
-            and len(obj) == 69
-            and obj and isinstance(obj[0], list)
-        ):
+        global _inner_len
+        if _is_generate_payload(obj):
+            # Every chat turn passes through here, including the one that primes
+            # a video conversation, so the width is known before we hand-build.
+            _inner_len = len(obj)
+        if _video_ctx.get() and _is_generate_payload(obj):
             mc = obj[0]
             while len(mc) < 10:
                 mc.append(None)
@@ -126,7 +146,7 @@ def _decode_escapes(blob: str) -> str:
 def _build_video_inner(prompt: str, metadata, uid: str, aspect: int, file_data=None) -> list:
     # message_content[3] carries uploaded reference frames (image-to-video); None = text-only.
     mc = [prompt, 0, None, file_data, None, None, 0, None, None, VIDEO_TOOL]
-    inner = [None] * 69
+    inner = [None] * _inner_len
     inner[0] = mc
     inner[1] = ["en"]
     inner[2] = metadata               # existing-conversation context (required)
@@ -230,10 +250,10 @@ async def generate_video_url(manager, prompt: str, aspect: int = 16, timeout: fl
     2. Send the raw video request (async; returns a pending state).
     3. Poll read_chat until the finished-video download URL is available.
     """
-    from .config import Model
+    from .config import resolve_model
 
     client = await manager.get()
-    chat = client.start_chat(model=Model.BASIC_PRO)
+    chat = client.start_chat(model=resolve_model("gemini-3-pro"))
     await chat.send_message("I want to create a video. Reply with just: READY")
     cid = chat.cid
     if not cid or not chat.metadata:

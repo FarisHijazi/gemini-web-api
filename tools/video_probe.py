@@ -5,7 +5,6 @@ import sys
 import time
 
 from gemini_webapi import GeminiClient
-from gemini_webapi.constants import Model
 
 sys.path.insert(0, "tools")
 from extract_cookies import extract  # noqa: E402
@@ -20,7 +19,7 @@ async def main() -> None:
     t0 = time.time()
     out = await client.generate_content(
         "Create a short 8-second cinematic video of a red fox running through a snowy forest at sunrise.",
-        model=Model.BASIC_PRO,
+        model="gemini-3-pro",
     )
     dt = time.time() - t0
     print(f"generate returned in {dt:.0f}s", flush=True)

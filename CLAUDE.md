@@ -7,10 +7,37 @@ usage in [@README.md](README.md); reverse-engineering details in
 ## Run
 
 ```bash
-uv run --active python main.py            # server on :8100, docs at /docs
-GEMINI_AUTHUSER=6 uv run --active python main.py   # target Google account u/6
+GEMINI_CHROME_ACCOUNT=me@example.com uv run --active python main.py   # :8100, docs at /docs
+GEMINI_AUTHUSER=6 uv run --active python main.py                     # multi-login account u/6
 ```
 Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell).
+
+## Traps
+
+1. **Unpinned, the Google account follows your browser.** `_cookie_stores()`
+   globs every Chrome profile and sorts by mtime, so the first profile holding a
+   Gemini cookie wins — i.e. whichever profile you last used. With personal and
+   work accounts both signed in, the server silently speaks as the wrong one and
+   flips between restarts. Always set `GEMINI_CHROME_ACCOUNT` (pin by email;
+   an unknown one raises rather than falling back). The chosen account is printed
+   once at first use: `[gemini] using Google account: … [pinned]`.
+2. **Model names are strings, never `Model` enum members.** The enum is
+   deprecated in gemini-webapi 2.1 and pending removal. `config.resolve_model()`
+   returns a `gemini-3-*` name, which 2.0.x matches exactly and 2.1.x matches via
+   its version-stripping normalizer (`MODEL_PREFIX_RE`) — one table, both
+   versions. Adding `Model.X` anywhere re-breaks the upgrade.
+3. **The thinking tier does not exist on 2.1.x.** `*_LITE` is a new cheap tier
+   with its own model id, *not* `*_THINKING` renamed. `config._THINKING` is None
+   there, thinking names resolve to flash, and `list_public_models()` stops
+   advertising them — never advertise a model that is silently served as another.
+4. **The raw video payload width is learned, not hardcoded.** `inner_req_list`
+   went 69 → 81 between 2.0 and 2.1. `video.py` records the width the library
+   actually serializes (`_inner_len`) and hand-builds to match; the old `== 69`
+   check failed *silently*, degrading video requests to plain chat.
+5. **`uv run` spawns python as a child**, so a pidfile holding the launcher's pid
+   does not stop the server — `~/bin/gemini-web-api-server stop` walks
+   descendants by PPID (`pgrep -P`, ancestry not name matching) and then verifies
+   the port actually went quiet.
 
 ## Two backends, one server (`GEMINI_BACKEND`)
 

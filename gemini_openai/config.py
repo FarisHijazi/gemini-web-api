@@ -2,17 +2,17 @@
 
 Single source of truth for:
   - how we obtain Gemini auth cookies (env var first, then local Chrome)
-  - how OpenAI-style model names map to gemini_webapi Model enums
+  - how OpenAI-style model names map to gemini_webapi model names
   - server-level settings (optional API key, host/port)
 """
 
 from __future__ import annotations
 
 import glob
+import json
 import os
 import sys
 
-from gemini_webapi.constants import Model
 
 # --------------------------------------------------------------------------- #
 # Server settings
@@ -58,9 +58,51 @@ CHROME_DIR = os.getenv("GEMINI_CHROME_DIR") or _default_chrome_dir()
 # --------------------------------------------------------------------------- #
 # Auth cookies
 # --------------------------------------------------------------------------- #
+def profile_accounts() -> dict[str, str]:
+    """Chrome profile directory -> signed-in account email, from Local State."""
+    try:
+        with open(os.path.join(CHROME_DIR, "Local State"), encoding="utf-8") as f:
+            cache = json.load(f).get("profile", {}).get("info_cache", {})
+    except (OSError, ValueError):
+        return {}
+    return {prof: (meta.get("user_name") or "") for prof, meta in cache.items()}
+
+
+def account_of(store_path: str) -> str:
+    """Account email behind a cookie-store path, or '' if unknown."""
+    parts = store_path.split(os.sep)
+    prof = parts[-2] if parts[-1] == "Cookies" else parts[-3]
+    if prof == "Network":
+        prof = parts[-3]
+    return profile_accounts().get(prof, "")
+
+
+def _pinned_profile() -> str | None:
+    """The profile directory to use, or None to fall back to browsing them all.
+
+    GEMINI_CHROME_ACCOUNT pins by email, which is the only stable way to say
+    which Google account this server speaks as -- Chrome's "Profile N" directory
+    names are opaque and the mapping differs per machine. A pinned account that
+    does not exist is a hard error: silently falling back would mean running
+    under whichever account happens to win, which is how this went wrong before.
+    """
+    if pin := os.getenv("GEMINI_CHROME_PROFILE"):
+        return pin
+    account = (os.getenv("GEMINI_CHROME_ACCOUNT") or "").strip().lower()
+    if not account:
+        return None
+    for prof, email in profile_accounts().items():
+        if email.strip().lower() == account:
+            return prof
+    known = sorted(e for e in profile_accounts().values() if e)
+    raise RuntimeError(
+        f"GEMINI_CHROME_ACCOUNT={account!r} is not signed in to Chrome at "
+        f"{CHROME_DIR}. Signed-in accounts: {', '.join(known) or '(none)'}"
+    )
+
+
 def _cookie_stores() -> list[str]:
-    # Pin a specific profile with GEMINI_CHROME_PROFILE (e.g. "Profile 5").
-    pin = os.getenv("GEMINI_CHROME_PROFILE")
+    pin = _pinned_profile()
     profiles = (
         [os.path.join(CHROME_DIR, pin)] if pin else glob.glob(os.path.join(CHROME_DIR, "*"))
     )
@@ -70,7 +112,10 @@ def _cookie_stores() -> list[str]:
             p = os.path.join(prof, name)
             if os.path.isfile(p):
                 paths.append(p)
-    paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    # Most-recently-used profile first. NOTE: unpinned, this makes the account
+    # depend on which Chrome profile you last touched -- so with several
+    # accounts signed in, ALWAYS pin GEMINI_CHROME_ACCOUNT.
+    paths.sort(key=lambda p: (-os.path.getmtime(p), p))
     return paths
 
 
@@ -145,6 +190,21 @@ def get_cookies() -> tuple[str | None, str | None]:
     return best.get("__Secure-1PSID"), best.get("__Secure-1PSIDTS")
 
 
+_announced = False
+
+
+def _announce_account(store: str) -> None:
+    """Log the account exactly once -- the wrong one is otherwise invisible."""
+    global _announced
+    if _announced:
+        return
+    _announced = True
+    who = account_of(store) or "unknown account"
+    pinned = os.getenv("GEMINI_CHROME_ACCOUNT") or os.getenv("GEMINI_CHROME_PROFILE")
+    how = "pinned" if pinned else "AUTO-SELECTED (most recently used Chrome profile)"
+    print(f"[gemini] using Google account: {who}  [{how}]", flush=True)
+
+
 def get_full_jar() -> dict[str, str]:
     """Full `.google.com` (path=/) auth cookie jar from the selected profile.
 
@@ -169,6 +229,7 @@ def get_full_jar() -> dict[str, str]:
             if c.domain.endswith(".google.com") and c.path == "/"
         }
         if "__Secure-1PSID" in jar:
+            _announce_account(store)
             return jar
     # Local store unreadable — fall back to a logged-in Chrome over CDP.
     return cookies_via_cdp()
@@ -177,45 +238,82 @@ def get_full_jar() -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 # Model mapping
 # --------------------------------------------------------------------------- #
-# Canonical names are the gemini_webapi model_name strings; we add convenient
-# aliases so OpenAI-oriented clients (which often hardcode gpt-* names) work.
-_CANON: dict[str, Model] = {
-    "gemini-3-pro": Model.BASIC_PRO,
-    "gemini-3-flash": Model.BASIC_FLASH,
-    "gemini-3-flash-thinking": Model.BASIC_THINKING,
-    "gemini-3-pro-plus": Model.PLUS_PRO,
-    "gemini-3-flash-plus": Model.PLUS_FLASH,
-    "gemini-3-flash-thinking-plus": Model.PLUS_THINKING,
-    "gemini-3-pro-advanced": Model.ADVANCED_PRO,
-    "gemini-3-flash-advanced": Model.ADVANCED_FLASH,
-    "gemini-3-flash-thinking-advanced": Model.ADVANCED_THINKING,
+# Values are library model-NAME strings, never `Model` enum members.
+#
+# The enum is deprecated in gemini-webapi 2.1 and pending removal, whereas name
+# resolution works on every version we support:
+#   * 2.0.x registers the models as `gemini-3-pro`, `gemini-3-flash`, ... so a
+#     `gemini-3-*` name is an exact match.
+#   * 2.1.x renamed them to `gemini-pro`, `gemini-flash`, ... but resolves names
+#     through MODEL_PREFIX_RE (`^gemini-(?:\d+(?:\.\d+)?-)?`), which strips the
+#     version, so `gemini-3-pro` still matches `gemini-pro`.
+# One table therefore serves both, and the public names below stay stable no
+# matter what upstream calls them internally.
+
+
+def _thinking_tier() -> str | None:
+    """Name of the thinking tier, or None where the library no longer has one.
+
+    2.1 deleted BASIC/PLUS/ADVANCED_THINKING outright. `*_LITE` is a NEW cheap
+    tier with its own model id, not the thinking tier renamed, so there is
+    nothing to fall forward to -- callers asking for thinking get flash.
+    """
+    try:
+        from gemini_webapi.constants import Model
+    except ImportError:  # pragma: no cover - library always present in practice
+        return None
+    return "gemini-3-flash-thinking" if hasattr(Model, "BASIC_THINKING") else None
+
+
+_THINKING = _thinking_tier()
+
+
+def _thinking(name: str, fallback: str) -> str:
+    """`name` where the library still has a thinking tier, else `fallback`."""
+    return name if _THINKING else fallback
+
+
+_CANON: dict[str, str] = {
+    "gemini-3-pro": "gemini-3-pro",
+    "gemini-3-flash": "gemini-3-flash",
+    "gemini-3-flash-thinking": _thinking("gemini-3-flash-thinking", "gemini-3-flash"),
+    "gemini-3-pro-plus": "gemini-3-pro-plus",
+    "gemini-3-flash-plus": "gemini-3-flash-plus",
+    "gemini-3-flash-thinking-plus": _thinking(
+        "gemini-3-flash-thinking-plus", "gemini-3-flash-plus"
+    ),
+    "gemini-3-pro-advanced": "gemini-3-pro-advanced",
+    "gemini-3-flash-advanced": "gemini-3-flash-advanced",
+    "gemini-3-flash-thinking-advanced": _thinking(
+        "gemini-3-flash-thinking-advanced", "gemini-3-flash-advanced"
+    ),
 }
 
-_ALIASES: dict[str, Model] = {
+_ALIASES: dict[str, str] = {
     # short forms
-    "gemini-pro": Model.BASIC_PRO,
-    "gemini-flash": Model.BASIC_FLASH,
-    "gemini-thinking": Model.BASIC_THINKING,
-    "pro": Model.BASIC_PRO,
-    "flash": Model.BASIC_FLASH,
-    "thinking": Model.BASIC_THINKING,
+    "gemini-pro": "gemini-3-pro",
+    "gemini-flash": "gemini-3-flash",
+    "gemini-thinking": _CANON["gemini-3-flash-thinking"],
+    "pro": "gemini-3-pro",
+    "flash": "gemini-3-flash",
+    "thinking": _CANON["gemini-3-flash-thinking"],
     # legacy gemini names -> nearest current
-    "gemini-2.5-pro": Model.BASIC_PRO,
-    "gemini-2.5-flash": Model.BASIC_FLASH,
-    "gemini-1.5-pro": Model.BASIC_PRO,
-    "gemini-1.5-flash": Model.BASIC_FLASH,
+    "gemini-2.5-pro": "gemini-3-pro",
+    "gemini-2.5-flash": "gemini-3-flash",
+    "gemini-1.5-pro": "gemini-3-pro",
+    "gemini-1.5-flash": "gemini-3-flash",
     # openai names -> sensible defaults so drop-in clients work
-    "gpt-4": Model.BASIC_PRO,
-    "gpt-4o": Model.BASIC_PRO,
-    "gpt-4-turbo": Model.BASIC_PRO,
-    "gpt-4o-mini": Model.BASIC_FLASH,
-    "gpt-3.5-turbo": Model.BASIC_FLASH,
+    "gpt-4": "gemini-3-pro",
+    "gpt-4o": "gemini-3-pro",
+    "gpt-4-turbo": "gemini-3-pro",
+    "gpt-4o-mini": "gemini-3-flash",
+    "gpt-3.5-turbo": "gemini-3-flash",
 }
 
-DEFAULT_MODEL = Model.BASIC_FLASH
+DEFAULT_MODEL = "gemini-3-flash"
 
 
-def resolve_model(name: str | None) -> Model:
+def resolve_model(name: str | None) -> str:
     if not name:
         return DEFAULT_MODEL
     key = name.strip().lower()
@@ -229,5 +327,9 @@ def resolve_model(name: str | None) -> Model:
 
 
 def list_public_models() -> list[str]:
-    """Names advertised on /v1/models."""
-    return list(_CANON.keys())
+    """Names advertised on /v1/models.
+
+    The thinking tier is withheld where the installed library has none, so we
+    never advertise a model that would silently be served as flash.
+    """
+    return [n for n in _CANON if _THINKING or "thinking" not in n]

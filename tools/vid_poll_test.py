@@ -8,7 +8,6 @@ import time
 os.environ["GEMINI_AUTHUSER"] = "6"
 from gemini_openai import video as vmod  # noqa: E402
 from gemini_openai.gemini_pool import manager  # noqa: E402
-from gemini_webapi.constants import Model  # noqa: E402
 from gemini_webapi.exceptions import APIError  # noqa: E402
 
 raw_responses = []
@@ -31,7 +30,7 @@ async def main():
     client._batch_execute = cap_be
 
     # 1) prime a conversation
-    chat = client.start_chat(model=Model.BASIC_PRO)
+    chat = client.start_chat(model="gemini-3-pro")
     await chat.send_message("I want to create a video. Reply with just: READY")
     cid = chat.cid
     print("primed; cid:", cid, flush=True)

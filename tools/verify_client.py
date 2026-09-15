@@ -4,7 +4,6 @@ import asyncio
 import sys
 
 from gemini_webapi import GeminiClient
-from gemini_webapi.constants import Model
 
 sys.path.insert(0, "tools")
 from extract_cookies import extract  # noqa: E402
@@ -18,12 +17,12 @@ async def main() -> None:
     print("init OK")
 
     r = await client.generate_content(
-        "Reply with exactly this and nothing else: PONG_42", model=Model.BASIC_FLASH
+        "Reply with exactly this and nothing else: PONG_42", model="gemini-3-flash"
     )
     print("MODEL=flash TEXT:", repr(r.text[:200]))
 
     # multi-turn via chat
-    chat = client.start_chat(model=Model.BASIC_PRO)
+    chat = client.start_chat(model="gemini-3-pro")
     r2 = await chat.send_message("My name is Zebra. Remember it.")
     print("PRO turn1:", repr(r2.text[:120]))
     r3 = await chat.send_message("What name did I tell you? One word.")
