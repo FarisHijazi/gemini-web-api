@@ -105,3 +105,32 @@ def test_unpinned_order_is_deterministic(chrome):
         os.utime(chrome / prof / "Cookies", (1_700_000_000, 1_700_000_000))
     assert config._cookie_stores() == config._cookie_stores()
     assert len(set(config._cookie_stores())) == 3
+
+
+# --------------------------------------------------------------------------- #
+# Who owns refreshing the session cookie
+# --------------------------------------------------------------------------- #
+def test_chrome_cookies_mean_chrome_owns_the_refresh(monkeypatch):
+    # Rotating a session Chrome also holds logs the browser out of that account,
+    # so reading from Chrome must never rotate.
+    monkeypatch.delenv("GEMINI_1PSID", raising=False)
+    monkeypatch.delenv("GEMINI_AUTO_REFRESH", raising=False)
+    assert config.rotate_cookies_ourselves() is False
+
+
+def test_explicit_cookies_mean_we_must_refresh(monkeypatch):
+    # No browser owns these, so nobody else will keep them alive.
+    monkeypatch.setenv("GEMINI_1PSID", "dummy")
+    monkeypatch.delenv("GEMINI_AUTO_REFRESH", raising=False)
+    assert config.rotate_cookies_ourselves() is True
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [("1", True), ("true", True), ("yes", True), ("0", False), ("false", False),
+     ("off", False), ("", False)],
+)
+def test_auto_refresh_override_wins(monkeypatch, value, expected):
+    monkeypatch.delenv("GEMINI_1PSID", raising=False)
+    monkeypatch.setenv("GEMINI_AUTO_REFRESH", value)
+    assert config.rotate_cookies_ourselves() is expected

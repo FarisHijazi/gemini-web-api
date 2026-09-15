@@ -151,6 +151,29 @@ def cookies_via_cdp() -> dict[str, str]:
     return box.get("jar", {})
 
 
+def rotate_cookies_ourselves() -> bool:
+    """Whether THIS server refreshes __Secure-1PSIDTS, or leaves it to its owner.
+
+    Rotating mints a new cookie and invalidates the old one, so a server that
+    rotates a session Chrome is also using logs the browser out of that Google
+    account -- repeatedly, once per refresh interval. The rule is simply that
+    whoever supplies the cookies owns keeping them fresh:
+
+      * cookies read from Chrome -> Chrome is the owner and refreshes them as
+        you browse, so we read and never write. If ours does go stale we get an
+        AuthError, and the pool re-reads Chrome's current jar and re-inits.
+      * explicit GEMINI_1PSID cookies -> there is no other owner, so we must
+        refresh them ourselves or the session dies.
+
+    Override with GEMINI_AUTO_REFRESH=1/0 when neither applies (e.g. cookies
+    exported from a browser that is no longer running).
+    """
+    override = os.getenv("GEMINI_AUTO_REFRESH")
+    if override is not None:
+        return override.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(os.getenv("GEMINI_1PSID"))
+
+
 def get_cookies() -> tuple[str | None, str | None]:
     """Return (secure_1psid, secure_1psidts).
 

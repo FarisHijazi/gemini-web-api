@@ -199,6 +199,7 @@ Then: `opencode run -m gemini-web/gemini-3-flash "your prompt"` (verified workin
 | `GEMINI_CHROME_ACCOUNT` | *(auto)* | **pin the Google account by email** (e.g. `me@example.com`). Strongly recommended — see below |
 | `GEMINI_CHROME_PROFILE` | *(auto)* | pin a Chrome profile dir (e.g. `"Profile 5"`) — lower-level, takes precedence over the account pin |
 | `GEMINI_1PSID` / `GEMINI_1PSIDTS` | *(none)* | supply cookies explicitly (headless/remote); skips reading local Chrome |
+| `GEMINI_AUTO_REFRESH` | *(auto)* | whether **this server** rotates `__Secure-1PSIDTS`. Auto: off for Chrome cookies, on for explicit ones — see below |
 | `GEMINI_PROXY` | *(none)* | HTTP proxy URL |
 | `GEMINI_MEDIA_DIR` | `media` | where generated videos are saved |
 | `GEMINI_VIDEO_TIMEOUT` | `600` | seconds before a video job fails |
@@ -228,6 +229,23 @@ chose, so a wrong one is visible immediately:
 `GEMINI_CHROME_PROFILE` pins the Chrome profile *directory* instead (`"Profile
 5"`) and wins over `GEMINI_CHROME_ACCOUNT`. Prefer the email: profile directory
 names are opaque and differ per machine.
+
+### Why it used to log you out of Google
+
+`__Secure-1PSIDTS` is a rotating session cookie: refreshing it mints a new value
+and **invalidates the old one**. A long-running server that refreshes a session
+your browser is also using therefore signs that browser out, once per refresh
+interval.
+
+So the rule is that whoever supplies the cookies owns refreshing them:
+
+| Cookie source | Who refreshes | Why |
+|---|---|---|
+| local Chrome | **Chrome** | it owns the session and keeps it fresh as you browse; we only read. A stale token here raises `AuthError`, and the client re-reads Chrome's current jar and re-initializes |
+| `GEMINI_1PSID` env | **this server** | nothing else is keeping those cookies alive |
+
+Override with `GEMINI_AUTO_REFRESH=1` / `=0` when neither applies — for example
+cookies exported from a browser that is no longer running.
 
 #### Multi-login within one profile
 

@@ -34,7 +34,19 @@ Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell)
    went 69 → 81 between 2.0 and 2.1. `video.py` records the width the library
    actually serializes (`_inner_len`) and hand-builds to match; the old `== 69`
    check failed *silently*, degrading video requests to plain chat.
-5. **`uv run` spawns python as a child**, so a pidfile holding the launcher's pid
+5. **Cookie-cache FILENAMES contain the raw `__Secure-1PSID`.** The library
+   names them `.cached_cookies_<__Secure-1PSID>.json`, so printing a cache path
+   leaks a live Google session credential — even in a script that is careful to
+   print only hashes of the *values*. Print `os.path.basename(p)[:28]` or a hash,
+   never the full path. If one is leaked, the fix is to invalidate the session
+   (sign that account out of its Chrome profile), not to chase the copies.
+6. **Rotating `__Secure-1PSIDTS` logs the browser out.** `rotate_1psidts` mints a
+   new cookie and invalidates the old one, so refreshing a session Chrome also
+   holds signs that Google account out, once per refresh interval. Whoever
+   supplies the cookies owns refreshing them — see
+   `config.rotate_cookies_ourselves()`. Cookies from Chrome ⇒ we never rotate;
+   explicit `GEMINI_1PSID` ⇒ we must.
+7. **`uv run` spawns python as a child**, so a pidfile holding the launcher's pid
    does not stop the server — `~/bin/gemini-web-api-server stop` walks
    descendants by PPID (`pgrep -P`, ancestry not name matching) and then verifies
    the port actually went quiet.

@@ -113,3 +113,58 @@ while the actual server kept running and holding :8100 — `uv run` execs python
 a *child*, so the recorded pid was a wrapper. `stop` now walks descendants by
 PPID (`pgrep -P` — ancestry, not command-line matching) and verifies the port
 went quiet before claiming it stopped.
+
+## 4. Why it was logging the account out (the actual complaint)
+
+The account pin was the answer to "which account", but the *reason* it mattered
+was that using an account logs it out of Chrome repeatedly.
+
+**Mechanism, read out of the library rather than guessed:** `rotate_1psidts()`
+POSTs to Google's `ROTATE_COOKIES` endpoint, which mints a **new**
+`__Secure-1PSIDTS` and invalidates the old one. We called it every 540s
+(`auto_refresh=True, refresh_interval=540`). Chrome's stored copy therefore went
+stale every nine minutes, and Google signed the browser session out.
+
+**Evidence.** The rotation cache is keyed on `__Secure-1PSID`, so each entry
+names the browser session it rotated. Three entries existed; mapping each back to
+a live Chrome profile:
+
+```
+f.hijazi@…            session still matches Chrome   rotated  14.7 min ago
+(no live Chrome profile)  STALE                      rotated  66.3 min ago
+(no live Chrome profile)  STALE                      rotated  17.1 min ago
+```
+
+Two sessions this server had rotated no longer existed in any Chrome profile —
+i.e. those browser sessions had been replaced. One of them was 17 minutes old,
+inside the window of that session's own testing.
+
+**Fix — find the owner.** `rotate_1psidts` has exactly one call site in
+`client.py`, inside `start_auto_refresh`, gated on `auto_refresh`; the token
+fetch never rotates. So `auto_refresh=False` removes the rotation entirely. The
+rule is now that whoever supplies the cookies owns refreshing them
+(`config.rotate_cookies_ourselves()`):
+
+- **from Chrome** → Chrome owns the session and keeps it fresh; we read and never
+  write. The pool already re-inits on `AuthError`, and `get_cookies()` re-reads
+  Chrome on every call, so a stale token self-heals.
+- **from `GEMINI_1PSID`** → nothing else keeps them alive, so we must refresh.
+
+This is the "don't add a second write path to a shared resource" rule applied to
+a browser session.
+
+## 5. A mistake worth recording: the cache filename *is* the credential
+
+While listing the cache entries to remove the work-account ones, the removal
+script printed **full paths** — and the library names each file
+`.cached_cookies_<__Secure-1PSID>.json`. Every other script in this session
+deliberately printed only lengths and short hashes of cookie *values*; the
+filename was the hole in that discipline, and it leaked one live Google session
+cookie plus two already-dead ones into the session transcript.
+
+Blast radius was local: `~/.claude` is a public repo, but `projects/` is
+gitignored and no transcript file is tracked.
+
+The correct response to a leaked credential is to invalidate it, not to chase
+copies. Recorded as trap 5 in `CLAUDE.md`: print `basename[:28]` or a hash, never
+a cache path.
