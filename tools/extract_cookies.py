@@ -10,27 +10,25 @@ has both. Chrome may be running; browser_cookie3 copies the DB to avoid locks.
 
 from __future__ import annotations
 
-import glob
 import json
-import os
 import sys
 
 import browser_cookie3
 
-CHROME_DIR = os.path.expanduser("~/.config/google-chrome")
+from gemini_openai import config
+
 WANTED = ("__Secure-1PSID", "__Secure-1PSIDTS")
 
 
 def cookie_stores() -> list[str]:
-    """All candidate cookie DB paths, newest first (most-recently-used profile)."""
-    paths = []
-    for prof in glob.glob(os.path.join(CHROME_DIR, "*")):
-        for name in ("Network/Cookies", "Cookies"):
-            p = os.path.join(prof, name)
-            if os.path.isfile(p):
-                paths.append(p)
-    paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return paths
+    """All candidate cookie DB paths, newest first (most-recently-used profile).
+
+    Delegates to gemini_openai.config, which owns where Chrome lives. A second
+    copy here went stale the moment that one learned about macOS and Windows,
+    and this tool exists to diagnose the server — it has to look where the
+    server looks, GEMINI_CHROME_DIR and GEMINI_CHROME_PROFILE included.
+    """
+    return config._cookie_stores()
 
 
 def extract() -> dict | None:
