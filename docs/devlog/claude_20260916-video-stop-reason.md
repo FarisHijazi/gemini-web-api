@@ -58,6 +58,16 @@ Conversely the stop warning is a trustworthy signal: across every successful run
 that day it appeared **0** times, and 73 times once the daily video allowance
 ran out.
 
+## The sink is process-wide — scope it to the conversation
+
+Raised in review, and real: jobs run concurrently, so an unfiltered sink hands a
+stop from *one* turn to every poller in flight, failing unrelated videos with
+someone else's reason. The library formats the cid with `!r`, so the filter also
+requires `repr(cid)` in the message.
+
+Covered by `test_another_conversations_stop_does_not_fail_this_poll`, verified
+as a real regression test by removing the filter and watching it fail.
+
 ## Tests
 
 `tests/video_poll_test.py` — a live happy-path run needs unused daily video

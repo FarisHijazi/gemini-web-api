@@ -117,19 +117,25 @@ _DL_RE = re.compile(
 )
 
 
-def _stop_watcher(reasons: list[str]):
+def _stop_watcher(reasons: list[str], cid: str):
     """Sink for the library's own "generation interrupted/stopped" warning.
 
     gemini_webapi already detects a stopped turn (quota, safety filter, policy)
     and logs the server's verbatim reason. Keying on that beats matching guessed
     English phrasings, which silently stop matching when Google rewords them.
+
+    The sink is process-wide, so it must match on this poll's own conversation:
+    jobs run concurrently, and an unfiltered sink would fail every other video
+    in flight with an unrelated turn's reason. The library formats the cid with
+    `!r`, so `repr(cid)` is what appears in the message.
     """
     from gemini_webapi.utils.logger import logger
 
+    mine = repr(cid)
     return logger.add(
         lambda m: reasons.append(str(m).split("Reason:", 1)[-1].strip()),
         level="WARNING",
-        filter=lambda r: "interrupted/stopped" in r["message"],
+        filter=lambda r: "interrupted/stopped" in r["message"] and mine in r["message"],
     )
 
 
@@ -153,7 +159,7 @@ async def _poll_video_url(client, cid: str, timeout: float, interval: float = 8.
 
     client._batch_execute = cap
     reasons: list[str] = []
-    sink = _stop_watcher(reasons)
+    sink = _stop_watcher(reasons, cid)
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout
     try:

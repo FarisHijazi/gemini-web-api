@@ -44,13 +44,14 @@ class _FakeClient:
         return r
 
 
-def _stop_log(reason):
+def _stop_log(reason, cid="c_1"):
     """Emit exactly the warning gemini_webapi logs when a turn is stopped."""
     from gemini_webapi.utils.logger import logger
 
     def _emit():
+        # The library formats the cid with `!r`; match that exactly.
         logger.warning(
-            f"[read_chat] Gemini generation was interrupted/stopped for 'c_1'. Reason: {reason}"
+            f"[read_chat] Gemini generation was interrupted/stopped for {cid!r}. Reason: {reason}"
         )
 
     return _emit
@@ -101,3 +102,12 @@ def test_the_log_sink_is_removed_even_on_failure():
     with pytest.raises(RuntimeError):
         asyncio.run(video._poll_video_url(client, "c_1", timeout=5, interval=0))
     assert len(logger._core.handlers) == before
+
+
+def test_another_conversations_stop_does_not_fail_this_poll():
+    # Jobs run concurrently and the log sink is process-wide, so a stop in some
+    # OTHER conversation must not end this one -- it used to fail every video in
+    # flight with an unrelated turn's reason.
+    client = _FakeClient(["", f'"{URL}"'], on_read=_stop_log("out of videos", cid="c_other"))
+    got = asyncio.run(video._poll_video_url(client, "c_1", timeout=5, interval=0))
+    assert got == URL

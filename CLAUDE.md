@@ -59,7 +59,10 @@ Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell)
    lines are NOT stop conditions: one successful video run logged "successfully
    finalized the response" 4 times while Veo was still rendering, because the
    text answer finalizes long before the video URL appears. Only a URL or an
-   explicit stop may end the poll, and a URL in hand always wins.
+   explicit stop may end the poll, and a URL in hand always wins. The log sink
+   is process-wide, so it must also match the poll's own cid — jobs run
+   concurrently and an unscoped sink fails every video in flight with an
+   unrelated turn's reason.
 8. **`uv run` spawns python as a child**, so a pidfile holding the launcher's pid
    does not stop the server — `~/bin/gemini-web-api-server stop` walks
    descendants by PPID (`pgrep -P`, ancestry not name matching) and then verifies
