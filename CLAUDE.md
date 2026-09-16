@@ -7,10 +7,53 @@ usage in [@README.md](README.md); reverse-engineering details in
 ## Run
 
 ```bash
-uv run --active python main.py            # server on :8100, docs at /docs
-GEMINI_AUTHUSER=6 uv run --active python main.py   # target Google account u/6
+GEMINI_CHROME_ACCOUNT=me@example.com uv run --active python main.py   # :8100, docs at /docs
+GEMINI_AUTHUSER=6 uv run --active python main.py                     # multi-login account u/6
 ```
 Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell).
+
+## Traps
+
+1. **Unpinned, the Google account follows your browser.** `_cookie_stores()`
+   globs every Chrome profile and sorts by mtime, so the first profile holding a
+   Gemini cookie wins — i.e. whichever profile you last used. With personal and
+   work accounts both signed in, the server silently speaks as the wrong one and
+   flips between restarts. Always set `GEMINI_CHROME_ACCOUNT` (pin by email;
+   an unknown one raises rather than falling back). The chosen account is printed
+   once at first use: `[gemini] using Google account: … [pinned]`.
+2. **Model names are strings, never `Model` enum members.** The enum is
+   deprecated in gemini-webapi 2.1 and pending removal. `config.resolve_model()`
+   returns a `gemini-3-*` name, which 2.0.x matches exactly and 2.1.x matches via
+   its version-stripping normalizer (`MODEL_PREFIX_RE`) — one table, both
+   versions. Adding `Model.X` anywhere re-breaks the upgrade.
+3. **The thinking tier does not exist on 2.1.x.** `*_LITE` is a new cheap tier
+   with its own model id, *not* `*_THINKING` renamed. `config._THINKING` is None
+   there, thinking names resolve to flash, and `list_public_models()` stops
+   advertising them — never advertise a model that is silently served as another.
+4. **Never hand-build the generate payload — overlay it.** `inner_req_list`
+   went 69 → 81 between 2.0 and 2.1 *and* gained `inner[79]`/`[80]`, so the
+   hand-built video request stayed structurally valid while generating nothing;
+   the job then failed on its timeout with a message blaming quota, which was
+   wrong (the account was barely used). `video.py` now lets the library build
+   the request and `_JsonProxy` overlays only `message_content[9]`, `inner[17]`,
+   `[54]`, `[55]` — all below index 69, so either width works. Anything that
+   re-derives the full payload here will rot the same way.
+5. **Cookie-cache FILENAMES contain the raw `__Secure-1PSID`.** The library
+   names them `.cached_cookies_<__Secure-1PSID>.json`, so printing a cache path
+   leaks a live Google session credential — even in a script that is careful to
+   print only hashes of the *values*. Print `os.path.basename(p)[:28]` or a hash,
+   never the full path. If one is leaked, the fix is to invalidate the session
+   (sign that account out of its Chrome profile), not to chase the copies.
+6. **Rotating `__Secure-1PSIDTS` logs the browser out.** `rotate_1psidts` mints a
+   new cookie and invalidates the old one, so refreshing a session Chrome also
+   holds signs that Google account out, once per refresh interval. Whoever
+   supplies the cookies owns refreshing them — see
+   `config.rotate_cookies_ourselves()`. Cookies from Chrome ⇒ we never rotate;
+   explicit `GEMINI_1PSID` ⇒ we must.
+7. **`uv run` spawns python as a child**, so a pidfile holding the launcher's pid
+   does not stop the server — `~/bin/gemini-web-api-server stop` walks
+   descendants by PPID (`pgrep -P`, ancestry not name matching) and then verifies
+   the port actually went quiet.
 
 ## Two backends, one server (`GEMINI_BACKEND`)
 

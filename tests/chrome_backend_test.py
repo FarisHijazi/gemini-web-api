@@ -225,6 +225,16 @@ def routing_checks():
 
 
 def main():
+    # MEDIA_DIR defaults to the relative "media", so without this every run
+    # dropped fake PNG/MP4 fixtures into the repo's own media directory -- which
+    # the server also serves over /files.
+    import tempfile
+
+    from gemini_openai import video as video_mod
+
+    tmp = tempfile.mkdtemp(prefix="gemini-media-test-")
+    video_mod.MEDIA_DIR = tmp
+
     config = uvicorn.Config(srv.app, host="127.0.0.1", port=PORT, log_level="warning")
     sv = uvicorn.Server(config)
     t = threading.Thread(target=_run_server, args=(sv,), daemon=True)
