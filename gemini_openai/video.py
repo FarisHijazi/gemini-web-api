@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextvars
 
 import gemini_webapi.client as _gclient
+from gemini_webapi.utils.logger import logger as _glogger
 
 # message_content[9] value that selects the "generate visual media" tool.
 # Reverse-engineered from live gemini.google.com "Create videos"/"Create image"
@@ -129,10 +130,8 @@ def _stop_watcher(reasons: list[str], cid: str):
     in flight with an unrelated turn's reason. The library formats the cid with
     `!r`, so `repr(cid)` is what appears in the message.
     """
-    from gemini_webapi.utils.logger import logger
-
     mine = repr(cid)
-    return logger.add(
+    return _glogger.add(
         lambda m: reasons.append(str(m).split("Reason:", 1)[-1].strip()),
         level="WARNING",
         filter=lambda r: "interrupted/stopped" in r["message"] and mine in r["message"],
@@ -176,9 +175,7 @@ async def _poll_video_url(client, cid: str, timeout: float, interval: float = 8.
                 raise RuntimeError(f"Gemini stopped generating: {reasons[-1]}")
             await asyncio.sleep(interval)
     finally:
-        from gemini_webapi.utils.logger import logger
-
-        logger.remove(sink)
+        _glogger.remove(sink)
         client._batch_execute = orig_be
     raise TimeoutError("video did not finish generating in time")
 
