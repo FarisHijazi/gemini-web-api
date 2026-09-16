@@ -44,14 +44,10 @@ VIDEO_MODEL = {
     "model_header": {"x-goog-ext-525001261-jspb": _video_header("00000000-0000-0000-0000-000000000000")},
 }
 
-# Width of the library's generate payload (`inner_req_list`). It was 69 in
-# gemini-webapi 2.0 and 81 in 2.1, and we both patch one (the video tool flag
-# below) and hand-build one (_build_video_inner), so learn the current width
-# from whatever the library actually serializes rather than pinning a number
-# that goes stale silently. 69 is the floor, and the indices we touch are all
-# below it, so both widths are safe.
+# The library's generate payload (`inner_req_list`) is 69 wide in gemini-webapi
+# 2.0 and 81 in 2.1. We only recognise it and overlay a few fields, all below
+# index 69, so either width is fine -- the library owns building it.
 _INNER_LEN_FLOOR = 69
-_inner_len = _INNER_LEN_FLOOR
 
 
 def _is_generate_payload(obj) -> bool:
@@ -79,11 +75,6 @@ class _JsonProxy:
         return getattr(self._real, name)
 
     def dumps(self, obj, *args, **kwargs):
-        global _inner_len
-        if _is_generate_payload(obj):
-            # Every chat turn passes through here, including the one that primes
-            # a video conversation, so the width is known before we hand-build.
-            _inner_len = len(obj)
         if _video_ctx.get() and _is_generate_payload(obj):
             mc = obj[0]
             while len(mc) < 10:
@@ -118,19 +109,8 @@ import json as _json  # noqa: E402
 import os  # noqa: E402
 import re  # noqa: E402
 import time  # noqa: E402
-import urllib.parse  # noqa: E402
 import uuid  # noqa: E402
 
-# Static message_content flags (see the JSON proxy above for the full rationale).
-# We send the video request RAW (below) rather than through the library's
-# generate_content, so we set the inner fields explicitly here.
-DEFAULT_METADATA = ["", "", "", None, None, None, None, None, None, ""]
-# Video model header: capabilities [4,5,6,8] enable media; the uuid is a fixed
-# placeholder (the web app itself sends all-zeros here for the model header).
-VIDEO_MODEL_HEADER = (
-    '[1,null,null,null,"e6fa609c3fa255c0",null,null,0,[4,5,6,8],'
-    'null,null,2,null,null,3,null,"00000000-0000-0000-0000-000000000000"]'
-)
 # The finished MP4 is served from a time-limited usercontent download URL.
 _DL_RE = re.compile(
     r'https://[^"\\\s]*usercontent\.google\.com/download\?[^"\\\s]*filename=video\.mp4[^"\\\s]*'
@@ -141,52 +121,6 @@ _QUOTA_MARKERS = ("come back tomorrow", "can't generate more videos", "can't cre
 def _decode_escapes(blob: str) -> str:
     """Decode any-depth \\uXXXX (batchexecute double-escapes) and \\/."""
     return re.sub(r"\\+u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), blob).replace("\\/", "/")
-
-
-def _build_video_inner(prompt: str, metadata, uid: str, aspect: int, file_data=None) -> list:
-    # message_content[3] carries uploaded reference frames (image-to-video); None = text-only.
-    mc = [prompt, 0, None, file_data, None, None, 0, None, None, VIDEO_TOOL]
-    inner = [None] * _inner_len
-    inner[0] = mc
-    inner[1] = ["en"]
-    inner[2] = metadata               # existing-conversation context (required)
-    inner[6] = [1]; inner[7] = 1; inner[10] = 1; inner[11] = 0
-    inner[17] = [[1]]                 # video (image is [[0]])
-    inner[18] = 0; inner[27] = 1; inner[30] = [4]; inner[41] = [1]
-    inner[53] = 0; inner[54] = []
-    inner[55] = [[aspect]]            # aspect ratio (16=16:9, 9=9:16, 1=1:1)
-    inner[59] = uid; inner[61] = []; inner[68] = 2
-    # NOTE: inner[49] (turn counter) is intentionally NOT set — an arbitrary
-    # value there causes Google error 1053.
-    return inner
-
-
-async def _send_raw_video_request(client, metadata, prompt: str, aspect: int, file_data=None) -> str:
-    """POST the video StreamGenerate over the library's session; return raw text.
-
-    Returns quickly with a "Creating your video…" pending state (the finished
-    video is fetched later via read_chat polling).
-    """
-    uid = str(uuid.uuid4()).upper()
-    inner = _build_video_inner(prompt, metadata, uid, aspect, file_data)
-    freq = _json.dumps([None, _json.dumps(inner)])
-    endpoint = str(_gclient.Endpoint.GENERATE)  # already /u/N-prefixed by account.py
-    params = {"hl": "en", "_reqid": str(uuid.uuid4().int % 900000 + 100000), "rt": "c",
-              "bl": client.build_label}
-    if getattr(client, "session_id", None):
-        params["f.sid"] = client.session_id
-    url = endpoint + "?" + urllib.parse.urlencode(params)
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
-        "Origin": "https://gemini.google.com", "Referer": "https://gemini.google.com/",
-        "X-Same-Domain": "1",
-        "x-goog-ext-525001261-jspb": VIDEO_MODEL_HEADER,
-        "x-goog-ext-525005358-jspb": f'["{uid}",1]',
-    }
-    r = await client.client.post(
-        url, data={"at": client.access_token, "f.req": freq}, headers=headers, timeout=120
-    )
-    return r.text
 
 
 async def _poll_video_url(client, cid: str, timeout: float, interval: float = 8.0) -> str:
@@ -224,43 +158,34 @@ async def _poll_video_url(client, cid: str, timeout: float, interval: float = 8.
     raise TimeoutError("video did not finish generating in time")
 
 
-async def _upload_reference_frames(client, files) -> list | None:
-    """Upload reference images and return the `file_data` shape Gemini expects.
-
-    Same construction gemini_webapi.client uses for chat attachments:
-    `[[[uploaded_url], filename], ...]`. Returns None when there is nothing to
-    attach, which keeps the text-to-video path byte-identical to before.
-    """
-    if not files:
-        return None
-    from gemini_webapi.utils import parse_file_name, upload_file
-
-    urls = await asyncio.gather(*(
-        upload_file(f, client=client.client, push_id=client.push_id) for f in files
-    ))
-    return [[[u], parse_file_name(f)] for u, f in zip(urls, files)]
-
-
 async def generate_video_url(manager, prompt: str, aspect: int = 16, timeout: float = 300.0,
                              files=None) -> dict:
     """Full pipeline → returns {"download_url", "cid"} for a finished video.
 
     1. Prime a conversation (video only works as a follow-up turn — a fresh
        first turn returns error 1053).
-    2. Send the raw video request (async; returns a pending state).
+    2. Send the prompt with the video context set, so the library builds the
+       request and the JSON proxy marks it as video.
     3. Poll read_chat until the finished-video download URL is available.
     """
-    from .config import resolve_model
-
     client = await manager.get()
-    chat = client.start_chat(model=resolve_model("gemini-3-pro"))
+    chat = client.start_chat(model=VIDEO_MODEL)
     await chat.send_message("I want to create a video. Reply with just: READY")
     cid = chat.cid
     if not cid or not chat.metadata:
         raise RuntimeError("failed to open a conversation for video generation")
 
-    file_data = await _upload_reference_frames(client, files)
-    await _send_raw_video_request(client, chat.metadata, prompt, aspect, file_data)
+    # The library builds the request; `_JsonProxy` overlays the video fields.
+    # Hand-building it meant re-deriving every field the web app sends, which
+    # silently rotted when gemini-webapi 2.1 widened the payload and added
+    # inner[79]/[80] -- video then generated nothing until the 600s timeout.
+    tok, atok = _video_ctx.set(True), _video_ctx_aspect.set(aspect)
+    try:
+        await chat.send_message(prompt, files=files or None)
+    finally:
+        _video_ctx.reset(tok)
+        _video_ctx_aspect.reset(atok)
+
     url = await _poll_video_url(client, cid, timeout=timeout)
     return {"download_url": url, "cid": cid}
 

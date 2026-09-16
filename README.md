@@ -312,6 +312,12 @@ curl localhost:8100/v1/videos/generations/vid_...
 **How it works** (the hard-won details):
 - Video is selected by inner-payload fields `inner[17]=[[1]]` + aspect
   `inner[55]` + the media tool flag — the library hardcodes the *image* values.
+- **The library builds the request; we only overlay those fields.** We used to
+  hand-build the whole `inner_req_list`, which broke silently when gemini-webapi
+  2.1 widened it 69 → 81 and added `inner[79]`/`[80]`: the payload stayed valid
+  but generated nothing until the job timed out (and the timeout message then
+  blamed quota, misleadingly). Overlaying through the JSON proxy keeps our
+  coupling to four indices, all below 69, so either width works.
 - It **only works as a follow-up turn in an existing conversation**, so the
   pipeline primes a chat first (a fresh first-turn video request returns Google
   error `1053`). `inner[49]` is a turn counter — setting it manually also causes

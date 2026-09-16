@@ -30,10 +30,14 @@ Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell)
    with its own model id, *not* `*_THINKING` renamed. `config._THINKING` is None
    there, thinking names resolve to flash, and `list_public_models()` stops
    advertising them — never advertise a model that is silently served as another.
-4. **The raw video payload width is learned, not hardcoded.** `inner_req_list`
-   went 69 → 81 between 2.0 and 2.1. `video.py` records the width the library
-   actually serializes (`_inner_len`) and hand-builds to match; the old `== 69`
-   check failed *silently*, degrading video requests to plain chat.
+4. **Never hand-build the generate payload — overlay it.** `inner_req_list`
+   went 69 → 81 between 2.0 and 2.1 *and* gained `inner[79]`/`[80]`, so the
+   hand-built video request stayed structurally valid while generating nothing;
+   the job then failed on its timeout with a message blaming quota, which was
+   wrong (the account was barely used). `video.py` now lets the library build
+   the request and `_JsonProxy` overlays only `message_content[9]`, `inner[17]`,
+   `[54]`, `[55]` — all below index 69, so either width works. Anything that
+   re-derives the full payload here will rot the same way.
 5. **Cookie-cache FILENAMES contain the raw `__Secure-1PSID`.** The library
    names them `.cached_cookies_<__Secure-1PSID>.json`, so printing a cache path
    leaks a live Google session credential — even in a script that is careful to

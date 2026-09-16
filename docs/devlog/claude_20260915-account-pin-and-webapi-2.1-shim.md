@@ -168,3 +168,67 @@ gitignored and no transcript file is tracked.
 The correct response to a leaked credential is to invalidate it, not to chase
 copies. Recorded as trap 5 in `CLAUDE.md`: print `basename[:28]` or a hash, never
 a cache path.
+
+## 6. Video was broken by 2.1, and the fix was to delete code
+
+Confirming media end-to-end turned up the failure the width fix was *not*
+enough to prevent. A Veo job ran the full 600s and failed with:
+
+> timed out after 600s on profile(s) 0 — this almost always means the daily
+> video quota is exhausted there.
+
+That diagnosis was wrong: the account had **24,078 of 24,192 credits**. The job
+generated nothing because the request we sent was no longer the request the web
+app sends.
+
+`video.py` hand-built `inner_req_list` from a live capture. gemini-webapi 2.1
+widened it 69 → 81 **and added fields**, which `client.py` now sets:
+
+```python
+inner_req_list[68] = 1          # we hand-set 2
+inner_req_list[79] = 1          # we left None (or a model_number off the header)
+inner_req_list[80] = 2 if extended_thinking else 1   # we left None
+```
+
+Learning the *width* kept the list the right length but left the new slots
+empty, so the payload was structurally valid and semantically wrong — exactly
+the silent degrade this path is prone to.
+
+### Fix: let the library build it
+
+The library already does everything the hand-rolled request did, and does it
+against the current format:
+
+- builds `message_content` (7 fields; our proxy pads to 10 and sets `[9]`)
+- mints `uuid_val`, sets `inner_req_list[59]`, **and** sends the matching
+  `x-goog-ext-525005358-jspb` header
+- sends the model header from the model — `VIDEO_MODEL` is already a dict in
+  that shape, and 2.1 additionally appends the session id to it
+- uploads attachments via `send_message(files=...)`
+
+So `generate_video_url` now primes the conversation, sets `_video_ctx`, and
+calls `chat.send_message(prompt, files=...)`. `_JsonProxy` overlays only the
+genuinely video-specific fields (`message_content[9]`, `inner[17]`, `[54]`,
+`[55]`), all below index 69 and therefore width-agnostic.
+
+Deleted: `_build_video_inner`, `_send_raw_video_request`,
+`_upload_reference_frames`, `VIDEO_MODEL_HEADER`, the `urllib.parse` import, and
+the width-learning global that existed only to feed the hand-built payload.
+
+**Net: 17 lines added, 88 removed.** The remaining coupling to Google's wire
+format is four indices instead of twenty, and the version-sensitive part now
+belongs to the library we pin.
+
+### Images
+
+Verified working on 2.1.1: two generations, 14.0s and 14.6s, each returning one
+`lh3.googleusercontent.com` URL. Those URLs 403 from a script **by design** —
+Google serves generated images only to an authenticated browser context, and
+unlike video the bridge cannot rescue them (CORS). That is unchanged by 2.1.
+
+### Test hygiene
+
+`MEDIA_DIR` defaults to the relative `"media"`, so every chrome-backend test run
+wrote fixtures into the repo's own media directory — 16 of them were sitting
+there (70-byte PNGs, 25-byte `FAKE_MP4_BYTES_…` files), in a directory the
+server also serves over `/files`. The test now points the module at a temp dir.
