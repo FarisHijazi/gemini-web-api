@@ -115,7 +115,22 @@ import uuid  # noqa: E402
 _DL_RE = re.compile(
     r'https://[^"\\\s]*usercontent\.google\.com/download\?[^"\\\s]*filename=video\.mp4[^"\\\s]*'
 )
-_QUOTA_MARKERS = ("come back tomorrow", "can't generate more videos", "can't create more videos")
+
+
+def _stop_watcher(reasons: list[str]):
+    """Sink for the library's own "generation interrupted/stopped" warning.
+
+    gemini_webapi already detects a stopped turn (quota, safety filter, policy)
+    and logs the server's verbatim reason. Keying on that beats matching guessed
+    English phrasings, which silently stop matching when Google rewords them.
+    """
+    from gemini_webapi.utils.logger import logger
+
+    return logger.add(
+        lambda m: reasons.append(str(m).split("Reason:", 1)[-1].strip()),
+        level="WARNING",
+        filter=lambda r: "interrupted/stopped" in r["message"],
+    )
 
 
 def _decode_escapes(blob: str) -> str:
@@ -137,6 +152,8 @@ async def _poll_video_url(client, cid: str, timeout: float, interval: float = 8.
         return r
 
     client._batch_execute = cap
+    reasons: list[str] = []
+    sink = _stop_watcher(reasons)
     loop = asyncio.get_event_loop()
     deadline = loop.time() + timeout
     try:
@@ -146,14 +163,16 @@ async def _poll_video_url(client, cid: str, timeout: float, interval: float = 8.
                 await client.read_chat(cid, limit=3)
             except Exception:  # noqa: BLE001
                 pass
-            blob = "\n".join(captured)
-            if any(m in blob for m in _QUOTA_MARKERS):
-                raise RuntimeError("daily video generation quota exhausted for this account")
-            urls = _DL_RE.findall(_decode_escapes(blob))
+            urls = _DL_RE.findall(_decode_escapes("\n".join(captured)))
             if urls:
                 return urls[0]
+            if reasons:
+                raise RuntimeError(f"Gemini stopped generating: {reasons[-1]}")
             await asyncio.sleep(interval)
     finally:
+        from gemini_webapi.utils.logger import logger
+
+        logger.remove(sink)
         client._batch_execute = orig_be
     raise TimeoutError("video did not finish generating in time")
 
@@ -381,8 +400,8 @@ async def _run_job(manager, job_id: str, prompt: str, model, files, aspect: int 
         tried = job.get("tried_profiles") or _profile_candidates()
         job["error"] = (
             f"timed out after {VIDEO_TIMEOUT:.0f}s on profile(s) {','.join(tried)} — "
-            "this almost always means the daily video quota is exhausted there. "
-            "Set GEMINI_AUTHUSER_FALLBACKS to more profiles, or try again tomorrow."
+            "Gemini neither finished the video nor said why it stopped. "
+            "Set GEMINI_AUTHUSER_FALLBACKS to more profiles to try another account."
         )
     except Exception as e:  # noqa: BLE001
         job["status"] = "failed"

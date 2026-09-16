@@ -50,7 +50,17 @@ Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell)
    supplies the cookies owns refreshing them — see
    `config.rotate_cookies_ourselves()`. Cookies from Chrome ⇒ we never rotate;
    explicit `GEMINI_1PSID` ⇒ we must.
-7. **`uv run` spawns python as a child**, so a pidfile holding the launcher's pid
+7. **Never phrase-match Gemini's own messages — and never end the video poll on
+   "finalized".** The poller used to spot an exhausted quota with a list of
+   English phrases; Google reworded it to "You're out of videos for now", the
+   list matched nothing, and the job span the full 600 s before blaming quota as
+   a *guess*. It now keys on the library's own interrupted/stopped detection,
+   which carries the server's verbatim reason. The neighbouring `read_chat` log
+   lines are NOT stop conditions: one successful video run logged "successfully
+   finalized the response" 4 times while Veo was still rendering, because the
+   text answer finalizes long before the video URL appears. Only a URL or an
+   explicit stop may end the poll, and a URL in hand always wins.
+8. **`uv run` spawns python as a child**, so a pidfile holding the launcher's pid
    does not stop the server — `~/bin/gemini-web-api-server stop` walks
    descendants by PPID (`pgrep -P`, ancestry not name matching) and then verifies
    the port actually went quiet.
@@ -120,9 +130,11 @@ auto-routing).
   (emulated, incl. streaming + round-trip), `/v1/models`, vision input,
   multi-turn, OpenAI SDK drop-in, image generation, multi-account auth,
   **Veo video** (`/v1/videos/generations`, async job + poll).
-- **Video caveat:** per-account daily quota. Video only works as a follow-up
-  turn in a primed conversation; `inner[49]` must NOT be set (turn counter →
-  error 1053). Full detail in the video devlog.
+- **Video caveat:** per-account daily quota — when it runs out Gemini stops the
+  turn and says so, and the job now fails fast with that verbatim reason
+  (`docs/devlog/claude_20260916-video-stop-reason.md`). Video only works as a
+  follow-up turn in a primed conversation; `inner[49]` must NOT be set (turn
+  counter → error 1053). Full detail in the video devlog.
 - **Video download:** the `usercontent.google.com` MP4 host needs a per-host,
   per-account browser `OSID` (server GET → 403; same for `gemini_webapi`). Solved
   by the opt-in CDP browser bridge (`GEMINI_CDP_URL`, `video_bridge.py`); without
