@@ -46,7 +46,7 @@ class _FakeClient:
 
 def _stop_log(reason, cid="c_1"):
     """Emit exactly the warning gemini_webapi logs when a turn is stopped."""
-    from gemini_webapi.utils.logger import logger
+    from gemini_webapi import logger
 
     def _emit():
         # The library formats the cid with `!r`; match that exactly.
@@ -83,7 +83,7 @@ def test_still_generating_is_not_mistaken_for_a_stop():
     # "still working"/"finalized" both appear DURING a healthy generation --
     # observed 4 finalized + 5 still-working lines inside one successful run --
     # so neither may end the poll. Only a URL or a stop signal may.
-    from gemini_webapi.utils.logger import logger
+    from gemini_webapi import logger
 
     def _noise():
         logger.debug("[read_chat] Gemini is still working on the response for 'c_1'.")
@@ -95,7 +95,7 @@ def test_still_generating_is_not_mistaken_for_a_stop():
 
 
 def test_the_log_sink_is_removed_even_on_failure():
-    from gemini_webapi.utils.logger import logger
+    from gemini_webapi import logger
 
     before = len(logger._core.handlers)
     client = _FakeClient([""], on_read=_stop_log("nope"))

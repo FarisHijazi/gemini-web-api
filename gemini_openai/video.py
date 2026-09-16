@@ -20,7 +20,7 @@ from __future__ import annotations
 import contextvars
 
 import gemini_webapi.client as _gclient
-from gemini_webapi.utils.logger import logger as _glogger
+from gemini_webapi import logger as _glogger
 
 # message_content[9] value that selects the "generate visual media" tool.
 # Reverse-engineered from live gemini.google.com "Create videos"/"Create image"
