@@ -1,8 +1,12 @@
-"""Lazy, shared gemini_webapi client with auto-refresh and re-init on failure.
+"""Lazy, shared gemini_webapi client with re-init on failure.
 
-A single GeminiClient is shared across all requests. It is initialized once on
-first use and kept alive with auto_refresh so the rotating __Secure-1PSIDTS
-cookie stays fresh for a long-running server.
+A single GeminiClient is shared across all requests, initialized on first use.
+
+It does NOT refresh __Secure-1PSIDTS when the cookies came from Chrome:
+rotation mints a new cookie and invalidates the old one, which logs the browser
+out of that Google account. Chrome owns that session and keeps it fresh itself,
+so a stale token here simply raises AuthError and the retry path below re-reads
+Chrome's current jar. See `config.rotate_cookies_ourselves()`.
 """
 
 from __future__ import annotations
@@ -44,7 +48,13 @@ class GeminiManager:
             )
         proxy = config.os.getenv("GEMINI_PROXY") or None
         client = GeminiClient(psid, psidts, proxy=proxy)
-        await client.init(timeout=120, auto_refresh=True, refresh_interval=540)
+        # See config.rotate_cookies_ourselves(): rotating a session Chrome also
+        # holds logs the browser out, so by default Chrome owns the refresh.
+        await client.init(
+            timeout=120,
+            auto_refresh=config.rotate_cookies_ourselves(),
+            refresh_interval=540,
+        )
         return client
 
     async def get(self) -> GeminiClient:

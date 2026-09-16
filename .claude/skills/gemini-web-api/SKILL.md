@@ -95,10 +95,12 @@ $GW gemini-web-api-cli chat "count to 20 with notes" --stream   # real token str
 $GW gemini-web-api-cli models
 ```
 
-Models: `gemini-3-pro`, `gemini-3-flash`, `gemini-3-flash-thinking` (+ `-plus` /
-`-advanced` tiers). `gpt-4*` / `gpt-3.5-turbo` aliases map onto them.
+Models: `gemini-3-pro`, `gemini-3-flash`, plus the `-plus` / `-advanced` tiers.
+`-thinking` exists only on gemini-webapi 2.0.x. `gpt-4*` / `gpt-3.5-turbo`
+aliases map onto them.
 
-Streaming is **true** token streaming (upstream deltas forwarded live).
+Pin the Google account with `GEMINI_CHROME_ACCOUNT=<email>` — unpinned, the
+server uses whichever Chrome profile was touched most recently.
 
 ## 3. As an OpenAI endpoint
 

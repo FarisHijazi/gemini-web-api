@@ -63,7 +63,7 @@ protocol are documented at the top of [`gemini_openai/chrome_backend.py`](gemini
 | `POST /v1/chat/completions` — non-streaming | ✅ |
 | `POST /v1/chat/completions` — **streaming (SSE)** | ✅ |
 | **Tool / function calling** (`tools`, `tool_calls`, `tool_choice`) | ✅ emulated — works with agentic coding tools |
-| `GET /v1/models` | ✅ (Gemini 3 pro / flash / thinking + tiers) |
+| `GET /v1/models` | ✅ (Gemini 3 pro / flash + plus/advanced tiers; thinking only on gemini-webapi 2.0.x) |
 | Vision input (images in messages, OpenAI format) | ✅ |
 | Multi-turn conversations, system prompts | ✅ |
 | `gpt-4` / `gpt-4o` / `gpt-3.5-turbo` aliases | ✅ (map to Gemini) |
@@ -196,20 +196,65 @@ Then: `opencode run -m gemini-web/gemini-3-flash "your prompt"` (verified workin
 | `GEMINI_API_PORT` | `8100` | bind port |
 | `GEMINI_API_KEY` | *(empty)* | if set, clients must send `Authorization: Bearer <key>` |
 | `GEMINI_AUTHUSER` | *(none = u/0)* | Google multi-login account index — the `N` in `gemini.google.com/u/N/app` |
-| `GEMINI_CHROME_PROFILE` | *(auto)* | pin a Chrome profile dir (e.g. `"Profile 5"`) instead of auto-picking the newest |
+| `GEMINI_CHROME_ACCOUNT` | *(auto)* | **pin the Google account by email** (e.g. `me@example.com`). Strongly recommended — see below |
+| `GEMINI_CHROME_PROFILE` | *(auto)* | pin a Chrome profile dir (e.g. `"Profile 5"`) — lower-level, takes precedence over the account pin |
 | `GEMINI_1PSID` / `GEMINI_1PSIDTS` | *(none)* | supply cookies explicitly (headless/remote); skips reading local Chrome |
+| `GEMINI_AUTO_REFRESH` | *(auto)* | whether **this server** rotates `__Secure-1PSIDTS`. Auto: off for Chrome cookies, on for explicit ones — see below |
 | `GEMINI_PROXY` | *(none)* | HTTP proxy URL |
 | `GEMINI_MEDIA_DIR` | `media` | where generated videos are saved |
 | `GEMINI_VIDEO_TIMEOUT` | `600` | seconds before a video job fails |
 | `GEMINI_CDP_URL` | *(none)* | Chrome DevTools endpoint (e.g. `http://localhost:9222`). Enables server-side video download via the browser bridge, **and** auto-harvests cookies (incl. httpOnly `__Secure-1PSID`) when the local Chrome cookie store can't be read |
 
-### Multi-account / choosing the right Google account
+### Which Google account does this speak as?
 
-Google multi-login stores several accounts under one Chrome profile, selected by
-a `/u/N/` path prefix. `__Secure-1PSID` alone only reaches the **default**
-account (`u/0`). This project sends the **full `.google.com` cookie jar** plus
-the `/u/N/` routing, so any signed-in account works — set `GEMINI_AUTHUSER=N`
-(find `N` in the URL when that account is active in the browser).
+**If more than one Google account is signed in to Chrome, pin one.** Unpinned,
+the server walks every Chrome profile and takes the first one holding a Gemini
+cookie, ordered by *most recently used* — so the account silently follows
+whichever profile you last opened in the browser, and changes between restarts.
+With a personal and a work account signed in, that means work traffic can end up
+on the personal account, or vice versa.
+
+```bash
+GEMINI_CHROME_ACCOUNT=me@example.com uv run --active python main.py
+```
+
+A pinned account that is not signed in is a hard error listing the accounts that
+are, rather than a silent fallback. On startup the server prints the account it
+chose, so a wrong one is visible immediately:
+
+```
+[gemini] using Google account: me@example.com  [pinned]
+```
+
+`GEMINI_CHROME_PROFILE` pins the Chrome profile *directory* instead (`"Profile
+5"`) and wins over `GEMINI_CHROME_ACCOUNT`. Prefer the email: profile directory
+names are opaque and differ per machine.
+
+### Why it used to log you out of Google
+
+`__Secure-1PSIDTS` is a rotating session cookie: refreshing it mints a new value
+and **invalidates the old one**. A long-running server that refreshes a session
+your browser is also using therefore signs that browser out, once per refresh
+interval.
+
+So the rule is that whoever supplies the cookies owns refreshing them:
+
+| Cookie source | Who refreshes | Why |
+|---|---|---|
+| local Chrome | **Chrome** | it owns the session and keeps it fresh as you browse; we only read. A stale token here raises `AuthError`, and the client re-reads Chrome's current jar and re-initializes |
+| `GEMINI_1PSID` env | **this server** | nothing else is keeping those cookies alive |
+
+Override with `GEMINI_AUTO_REFRESH=1` / `=0` when neither applies — for example
+cookies exported from a browser that is no longer running.
+
+#### Multi-login within one profile
+
+Google multi-login also stores several accounts under one Chrome profile,
+selected by a `/u/N/` path prefix. `__Secure-1PSID` alone only reaches the
+**default** account (`u/0`). This project sends the **full `.google.com` cookie
+jar** plus the `/u/N/` routing, so any signed-in account works — set
+`GEMINI_AUTHUSER=N` (find `N` in the URL when that account is active in the
+browser).
 
 ```bash
 GEMINI_AUTHUSER=5 uv run --active python main.py
@@ -267,6 +312,12 @@ curl localhost:8100/v1/videos/generations/vid_...
 **How it works** (the hard-won details):
 - Video is selected by inner-payload fields `inner[17]=[[1]]` + aspect
   `inner[55]` + the media tool flag — the library hardcodes the *image* values.
+- **The library builds the request; we only overlay those fields.** We used to
+  hand-build the whole `inner_req_list`, which broke silently when gemini-webapi
+  2.1 widened it 69 → 81 and added `inner[79]`/`[80]`: the payload stayed valid
+  but generated nothing until the job timed out (and the timeout message then
+  blamed quota, misleadingly). Overlaying through the JSON proxy keeps our
+  coupling to four indices, all below 69, so either width works.
 - It **only works as a follow-up turn in an existing conversation**, so the
   pipeline primes a chat first (a fresh first-turn video request returns Google
   error `1053`). `inner[49]` is a turn counter — setting it manually also causes
