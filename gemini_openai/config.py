@@ -27,9 +27,8 @@ PORT = int(os.getenv("GEMINI_API_PORT", "8100"))
 #            otherwise fall back to the cookie/CDP gemini_webapi library.
 #   "webapi" — always the cookie backend (chat + images + Veo video).
 #   "chrome" — always the extension for chat (errors if no tab is connected).
-#   "media"  — chat on cookies, images/video through the extension when a tab
-#              is connected: the tab gets the bytes Google 403s server-side,
-#              without routing every chat request through a visible tab.
+# Media generation (images/video) always uses the cookie backend regardless, so a
+# single server serves chat-via-extension AND cookie-based media at once.
 BACKEND = os.getenv("GEMINI_BACKEND", "auto").strip().lower()
 # Optional bearer token clients must present. Empty => no auth enforced.
 API_KEY = os.getenv("GEMINI_API_KEY", "")

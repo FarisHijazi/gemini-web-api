@@ -24,14 +24,17 @@ The **same running server** can talk to Gemini two ways, and uses both at once:
 load:
 
 - **`auto`** *(default)* — chat uses the **extension when a tab is connected**,
-  else falls back to **cookies**. Vision/file input and **images/video always use
-  the cookie backend** (the extension can't produce them). So one server serves
-  chat-via-extension *and* cookie-based media simultaneously.
-- **`webapi`** — always cookies.
-- **`chrome`** — always the extension for chat (errors if no tab is connected).
-- **`media`** — chat always on cookies; images/video through the extension when a
-  tab is connected, which is what gets the bytes (Google 403s server-side
-  downloads). Use it when chat must not go through a visible, serialized tab.
+  else falls back to **cookies**. Vision/file input always uses cookies.
+- **`webapi`** — chat always on cookies (use it when chat must not queue behind a
+  visible tab — the local launcher runs this).
+- **`chrome`** — always the extension, for chat *and* media generation (errors if
+  no tab is connected).
+
+**Media bytes come through the tab in every mode.** Outside `chrome` mode, images
+and video are *generated* by the cookie backend, and a connected tab only
+*downloads* the finished bytes with the browser's own session — Google 403s any
+server-side download. The server then serves them from `/files/`. No tab: you get
+the raw browser-only URL instead.
 
 The `chrome` path exists because cookie auth is fragile (profiles go stale,
 `__Secure-1PSID` expires, Veo downloads need a CDP bridge). When the extension
@@ -280,18 +283,19 @@ In short:
   requests are the one exception: they buffer, since the full reply is needed to
   parse the `tool_calls` JSON.)
 
-## Images are browser-only
+## Images are browser-only (unless the extension is connected)
 
-`POST /v1/images/generations` returns an `lh3.googleusercontent.com` URL, but
-**you cannot download that URL from a script**: Google serves generated images
-only to an authenticated *browser* context. Verified — a server-side GET returns
-**403 even with the full cookie jar on the very first hit** (so it's an auth wall,
-not a single-use link), and an in-page `fetch()` is **CORS-blocked** (unlike the
-video host, which is why the browser bridge rescues video but not images).
+Google serves generated images only to an authenticated *browser*: a server-side
+GET of the `lh3.googleusercontent.com` URL returns **403 even with the full cookie
+jar**, and an in-page `fetch()` from gemini.google.com is **CORS-blocked**.
 
-Open the URL in the Chrome profile that generated it (it redirects to an
-`rd-gg-dl/…=s512` URL and renders fine), or just view the image in the Gemini
-conversation. Don't `curl` it and assume you got a PNG — you'll get a 403 page.
+**With the extension connected** this is handled for you: its service worker
+(host permissions, so exempt from CORS) fetches the full-size image
+(`=s2048-rj`, the suffix `gemini_webapi` itself uses) and the response carries a
+local `/files/…` URL with the real bytes.
+
+**Without it** you get the raw `lh3` URL — open it in the Chrome profile that
+generated it. Don't `curl` it and assume you got a PNG; you'll get a 403 page.
 
 ## Video (Veo) status
 
@@ -344,6 +348,11 @@ google-chrome --remote-debugging-port=9222 --user-data-dir="$HOME/.config/google
 # 2. point the server at it
 GEMINI_CDP_URL=http://localhost:9222 GEMINI_AUTHUSER=1 uv run --active python main.py
 ```
+
+**Easiest: connect the extension** — a connected tab fetches the MP4 in-page
+(this host does serve CORS to gemini.google.com) and completed jobs expose a local
+`url` (`/files/<job_id>.mp4`). The CDP bridge above is the fallback for a browser
+without the extension.
 
 With `GEMINI_CDP_URL` set, completed jobs expose a local `url`
 (`/files/<job_id>.mp4`) with the real bytes; each job downloads in its own browser

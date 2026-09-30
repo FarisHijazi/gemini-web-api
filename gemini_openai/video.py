@@ -183,13 +183,22 @@ async def generate_video_url(manager, prompt: str, aspect: int = 16, timeout: fl
 async def download_video(manager, url: str, dest: str) -> int:
     """Download a finished-video URL to `dest`. Returns byte size.
 
-    Two paths:
-      1. If GEMINI_CDP_URL is set, fetch through a logged-in browser (the only
-         way past the usercontent per-account OSID — see video_bridge.py).
-      2. Otherwise a direct server-side GET, which works only if the host does
-         not enforce OSID (it usually does → 403; caller surfaces download_url).
+    The usercontent host 403s a server-side GET (it wants a per-account browser
+    OSID), so the bytes come through a logged-in browser when one is reachable:
+      1. A connected extension tab fetches it with the browser's own session.
+      2. Else, if GEMINI_CDP_URL is set, the CDP bridge (see video_bridge.py).
+      3. Else a direct server-side GET (usually 403; caller surfaces download_url).
     """
     from . import config
+    from .chrome_backend import hub, manager as chrome_manager
+
+    if hub.online():
+        data = await chrome_manager.fetch_bytes(url, authuser=config.AUTHUSER or "0")
+        if b"ftyp" not in data[:64]:
+            raise RuntimeError("extension fetch returned non-mp4 data")
+        with open(dest, "wb") as f:
+            f.write(data)
+        return len(data)
 
     if config.CDP_URL:
         from . import video_bridge
