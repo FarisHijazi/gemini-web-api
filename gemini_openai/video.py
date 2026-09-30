@@ -8,7 +8,7 @@ StreamGenerate payload's message_content array (index 9):
 
 gemini_webapi doesn't expose this, so we inject it with a narrowly-scoped proxy
 around the `json` (orjson) reference used inside gemini_webapi.client. The proxy
-only rewrites the one payload shape (`inner_req_list`, a 69-element list) and
+only rewrites the one payload shape (the library's `inner_req_list`) and
 only while the `_video_ctx` contextvar is set — every other serialization is
 passed straight through untouched. This lets us reuse the library's existing
 response parser and video-polling logic (GeneratedVideo.save handles the 206
@@ -27,38 +27,25 @@ from gemini_webapi import logger as _glogger
 # traffic — this same flag is used for both image and video generation.
 VIDEO_TOOL = [None, None, None, None, None, None, [[None, None, None, 1]]]
 
-# What actually selects VIDEO over image is the model header's capability array:
-# regular Pro sends [4]; video sends [4,5,6,8] plus mode field 3. Model id
-# "e6fa609c3fa255c0" is gemini-3-pro-advanced. Captured live from a working
-# video generation request (Veo, "Create video" mode, Landscape 16:9).
-def _video_header(uuid_val: str) -> str:
-    # index 8 caps [4,5,6,8] + index 14 mode 3 + index 16 session uuid selects
-    # video. The uuid is the same one used in x-goog-ext-525005358-jspb.
-    return (
-        '[1,null,null,null,"e6fa609c3fa255c0",null,null,0,[4,5,6,8],'
-        f'null,null,2,null,null,3,null,"{uuid_val}"]'
-    )
-
-
+# gemini-3-pro-advanced's header, passed as an explicit model dict: the library
+# resolves NAMES against the models the account registered at init, which omit
+# the advanced tiers, so a name would fail. Written out rather than built with
+# `build_model_header`, whose signature differs between 2.0 (id, tail) and 2.1
+# (id, tail, number). The trailing zero uuid is a placeholder the web app sends.
 VIDEO_MODEL = {
     "model_name": "gemini-3-video",
-    "model_header": {"x-goog-ext-525001261-jspb": _video_header("00000000-0000-0000-0000-000000000000")},
+    "model_header": {
+        "x-goog-ext-525001261-jspb": '[1,null,null,null,"e6fa609c3fa255c0",null,null,0,'
+        '[4,5,6,8],null,null,2,null,null,3,null,"00000000-0000-0000-0000-000000000000"]'
+    },
 }
 
 # The library's generate payload (`inner_req_list`) is 69 wide in gemini-webapi
 # 2.0 and 81 in 2.1. We only recognise it and overlay a few fields, all below
 # index 69, so either width is fine -- the library owns building it.
-_INNER_LEN_FLOOR = 69
-
-
 def _is_generate_payload(obj) -> bool:
     """A generate request: a wide list whose first element is message content."""
-    return (
-        isinstance(obj, list)
-        and len(obj) >= _INNER_LEN_FLOOR
-        and bool(obj)
-        and isinstance(obj[0], list)
-    )
+    return isinstance(obj, list) and len(obj) >= 69 and isinstance(obj[0], list)
 
 
 _video_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar("gemini_video_mode", default=False)
@@ -90,7 +77,7 @@ class _JsonProxy:
             # selector. Setting an arbitrary value in a fresh turn causes Google
             # error 1053 — so we must NOT set it and let the library manage it.
             # Video also requires an existing conversation context (a primed
-            # chat turn) — see generate_video().
+            # chat turn) — see generate_video_url().
             obj[17] = [[1]]
             obj[54] = []
             obj[55] = [[_video_ctx_aspect.get()]]
@@ -108,14 +95,11 @@ _install_proxy()
 import asyncio  # noqa: E402
 import json as _json  # noqa: E402
 import os  # noqa: E402
-import re  # noqa: E402
 import time  # noqa: E402
 import uuid  # noqa: E402
 
-# The finished MP4 is served from a time-limited usercontent download URL.
-_DL_RE = re.compile(
-    r'https://[^"\\\s]*usercontent\.google\.com/download\?[^"\\\s]*filename=video\.mp4[^"\\\s]*'
-)
+class VideoStopped(RuntimeError):
+    """Gemini ended the turn without a video and said why (quota, filter, ...)."""
 
 
 def _stop_watcher(reasons: list[str], cid: str):
@@ -138,45 +122,29 @@ def _stop_watcher(reasons: list[str], cid: str):
     )
 
 
-def _decode_escapes(blob: str) -> str:
-    """Decode any-depth \\uXXXX (batchexecute double-escapes) and \\/."""
-    return re.sub(r"\\+u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), blob).replace("\\/", "/")
-
-
 async def _poll_video_url(client, cid: str, timeout: float, interval: float = 8.0) -> str:
-    """Poll read_chat until the finished-video download URL appears."""
-    captured: list[str] = []
-    orig_be = client._batch_execute
+    """Poll read_chat until the library has parsed a finished video on the turn.
 
-    async def cap(payloads, *a, **k):
-        r = await orig_be(payloads, *a, **k)
-        try:
-            captured.append(r.text)
-        except Exception:  # noqa: BLE001
-            pass
-        return r
-
-    client._batch_execute = cap
+    `read_chat` returns None while Gemini is still working and swallows its own
+    errors, so there is nothing to catch here. A turn can read as finalized
+    while Veo is still rendering, so "no video yet" is not a stop -- only the
+    library's explicit stop warning is.
+    """
     reasons: list[str] = []
     sink = _stop_watcher(reasons, cid)
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     try:
         while loop.time() < deadline:
-            captured.clear()
-            try:
-                await client.read_chat(cid, limit=3)
-            except Exception:  # noqa: BLE001
-                pass
-            urls = _DL_RE.findall(_decode_escapes("\n".join(captured)))
-            if urls:
-                return urls[0]
+            hist = await client.read_chat(cid, limit=2)
+            for turn in hist.turns if hist else []:
+                if turn.model_output and turn.model_output.videos:
+                    return turn.model_output.videos[0].url
             if reasons:
-                raise RuntimeError(f"Gemini stopped generating: {reasons[-1]}")
+                raise VideoStopped(f"Gemini stopped generating: {reasons[-1]}")
             await asyncio.sleep(interval)
     finally:
         _glogger.remove(sink)
-        client._batch_execute = orig_be
     raise TimeoutError("video did not finish generating in time")
 
 
@@ -194,7 +162,7 @@ async def generate_video_url(manager, prompt: str, aspect: int = 16, timeout: fl
     chat = client.start_chat(model=VIDEO_MODEL)
     await chat.send_message("I want to create a video. Reply with just: READY")
     cid = chat.cid
-    if not cid or not chat.metadata:
+    if not cid:
         raise RuntimeError("failed to open a conversation for video generation")
 
     # The library builds the request; `_JsonProxy` overlays the video fields.
@@ -212,7 +180,7 @@ async def generate_video_url(manager, prompt: str, aspect: int = 16, timeout: fl
     return {"download_url": url, "cid": cid}
 
 
-async def download_video(manager, url: str, dest: str, cid: str | None = None) -> int:
+async def download_video(manager, url: str, dest: str) -> int:
     """Download a finished-video URL to `dest`. Returns byte size.
 
     Two paths:
@@ -330,14 +298,12 @@ async def _switch_profile(manager, n: str) -> None:
 
 
 def _is_quota_failure(exc: BaseException) -> bool:
-    """Quota exhaustion shows up either as an explicit message or as a stall.
+    """Worth trying the next profile: Gemini said it stopped, or it stalled.
 
-    An exhausted account frequently never finishes generating rather than
-    erroring cleanly, so a timeout counts as (probable) quota exhaustion.
+    An exhausted account either says so (`VideoStopped`) or never finishes, so a
+    timeout counts as probable exhaustion too.
     """
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-        return True
-    return "quota" in str(exc).lower()
+    return isinstance(exc, (VideoStopped, asyncio.TimeoutError, TimeoutError))
 
 
 async def _generate_with_failover(manager, job: dict, prompt: str, files=None, aspect: int = 16):
@@ -378,7 +344,7 @@ async def _generate_with_failover(manager, job: dict, prompt: str, files=None, a
     raise last_exc  # pragma: no cover
 
 
-async def _run_job(manager, job_id: str, prompt: str, model, files, aspect: int = 16):
+async def _run_job(manager, job_id: str, prompt: str, files, aspect: int = 16):
     job = JOBS[job_id]
     job["status"] = "processing"
     try:
@@ -391,9 +357,7 @@ async def _run_job(manager, job_id: str, prompt: str, model, files, aspect: int 
         try:
             os.makedirs(MEDIA_DIR, exist_ok=True)
             path = os.path.join(MEDIA_DIR, f"{job_id}.mp4")
-            job["bytes"] = await download_video(
-                manager, result["download_url"], path, cid=result.get("cid")
-            )
+            job["bytes"] = await download_video(manager, result["download_url"], path)
             job["file"] = path
         except Exception as e:  # noqa: BLE001
             # generation succeeded; only the server-side download step didn't
@@ -411,8 +375,8 @@ async def _run_job(manager, job_id: str, prompt: str, model, files, aspect: int 
         job["error"] = f"{type(e).__name__}: {e}"
 
 
-def create_job(manager, prompt: str, model, files, aspect: int = 16) -> str:
+def create_job(manager, prompt: str, files, aspect: int = 16) -> str:
     job_id = "vid_" + uuid.uuid4().hex[:20]
     JOBS[job_id] = {"status": "queued", "prompt": prompt, "created": True}
-    asyncio.create_task(_run_job(manager, job_id, prompt, model, files, aspect))
+    asyncio.create_task(_run_job(manager, job_id, prompt, files, aspect))
     return job_id
