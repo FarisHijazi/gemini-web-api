@@ -8,10 +8,13 @@ Single source of truth for:
 
 from __future__ import annotations
 
+import functools
 import glob
 import json
 import os
 import sys
+
+from gemini_webapi.constants import Model
 
 
 # --------------------------------------------------------------------------- #
@@ -70,10 +73,7 @@ def profile_accounts() -> dict[str, str]:
 
 def account_of(store_path: str) -> str:
     """Account email behind a cookie-store path, or '' if unknown."""
-    parts = store_path.split(os.sep)
-    prof = parts[-2] if parts[-1] == "Cookies" else parts[-3]
-    if prof == "Network":
-        prof = parts[-3]
+    prof = os.path.relpath(store_path, CHROME_DIR).split(os.sep)[0]
     return profile_accounts().get(prof, "")
 
 
@@ -91,10 +91,11 @@ def _pinned_profile() -> str | None:
     account = (os.getenv("GEMINI_CHROME_ACCOUNT") or "").strip().lower()
     if not account:
         return None
-    for prof, email in profile_accounts().items():
+    accounts = profile_accounts()
+    for prof, email in accounts.items():
         if email.strip().lower() == account:
             return prof
-    known = sorted(e for e in profile_accounts().values() if e)
+    known = sorted(e for e in accounts.values() if e)
     raise RuntimeError(
         f"GEMINI_CHROME_ACCOUNT={account!r} is not signed in to Chrome at "
         f"{CHROME_DIR}. Signed-in accounts: {', '.join(known) or '(none)'}"
@@ -213,15 +214,9 @@ def get_cookies() -> tuple[str | None, str | None]:
     return best.get("__Secure-1PSID"), best.get("__Secure-1PSIDTS")
 
 
-_announced = False
-
-
+@functools.cache
 def _announce_account(store: str) -> None:
-    """Log the account exactly once -- the wrong one is otherwise invisible."""
-    global _announced
-    if _announced:
-        return
-    _announced = True
+    """Log the account once per store -- the wrong one is otherwise invisible."""
     who = account_of(store) or "unknown account"
     pinned = os.getenv("GEMINI_CHROME_ACCOUNT") or os.getenv("GEMINI_CHROME_PROFILE")
     how = "pinned" if pinned else "AUTO-SELECTED (most recently used Chrome profile)"
@@ -274,42 +269,15 @@ def get_full_jar() -> dict[str, str]:
 # matter what upstream calls them internally.
 
 
-def _thinking_tier() -> str | None:
-    """Name of the thinking tier, or None where the library no longer has one.
-
-    2.1 deleted BASIC/PLUS/ADVANCED_THINKING outright. `*_LITE` is a NEW cheap
-    tier with its own model id, not the thinking tier renamed, so there is
-    nothing to fall forward to -- callers asking for thinking get flash.
-    """
-    try:
-        from gemini_webapi.constants import Model
-    except ImportError:  # pragma: no cover - library always present in practice
-        return None
-    return "gemini-3-flash-thinking" if hasattr(Model, "BASIC_THINKING") else None
-
-
-_THINKING = _thinking_tier()
-
-
-def _thinking(name: str, fallback: str) -> str:
-    """`name` where the library still has a thinking tier, else `fallback`."""
-    return name if _THINKING else fallback
-
+# 2.1 deleted BASIC/PLUS/ADVANCED_THINKING outright. `*_LITE` is a NEW cheap
+# tier with its own model id, not the thinking tier renamed, so there is
+# nothing to fall forward to -- callers asking for thinking get flash.
+_HAS_THINKING = hasattr(Model, "BASIC_THINKING")
 
 _CANON: dict[str, str] = {
-    "gemini-3-pro": "gemini-3-pro",
-    "gemini-3-flash": "gemini-3-flash",
-    "gemini-3-flash-thinking": _thinking("gemini-3-flash-thinking", "gemini-3-flash"),
-    "gemini-3-pro-plus": "gemini-3-pro-plus",
-    "gemini-3-flash-plus": "gemini-3-flash-plus",
-    "gemini-3-flash-thinking-plus": _thinking(
-        "gemini-3-flash-thinking-plus", "gemini-3-flash-plus"
-    ),
-    "gemini-3-pro-advanced": "gemini-3-pro-advanced",
-    "gemini-3-flash-advanced": "gemini-3-flash-advanced",
-    "gemini-3-flash-thinking-advanced": _thinking(
-        "gemini-3-flash-thinking-advanced", "gemini-3-flash-advanced"
-    ),
+    n: n if _HAS_THINKING else n.replace("-thinking", "")
+    for tier in ("", "-plus", "-advanced")
+    for n in (f"gemini-3-pro{tier}", f"gemini-3-flash{tier}", f"gemini-3-flash-thinking{tier}")
 }
 
 _ALIASES: dict[str, str] = {
@@ -355,4 +323,4 @@ def list_public_models() -> list[str]:
     The thinking tier is withheld where the installed library has none, so we
     never advertise a model that would silently be served as flash.
     """
-    return [n for n in _CANON if _THINKING or "thinking" not in n]
+    return [n for n in _CANON if _HAS_THINKING or "thinking" not in n]
