@@ -8,7 +8,8 @@
  *      orphaned old ones shut themselves down (see content.js generation guard).
  *   2. Relay the "gcb-reload" command from a content script (sent when the
  *      server broadcasts {"type":"reload"}) into chrome.runtime.reload().
- *   3. Toolbar action: open a Gemini tab if none exists.
+ *   3. Fetch media bytes the page is CORS-blocked from ("gcb-fetch").
+ *   4. Toolbar action: open a Gemini tab if none exists.
  */
 
 async function injectAll(reason) {
@@ -32,10 +33,24 @@ async function injectAll(reason) {
 chrome.runtime.onInstalled.addListener(() => injectAll("installed/reloaded"));
 chrome.runtime.onStartup.addListener(() => injectAll("browser-startup"));
 
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg && msg.cmd === "gcb-reload") {
     console.log("[GCB] reload requested -- reloading extension");
     chrome.runtime.reload();
+  }
+  // Byte fetch the page can't do: lh3 image URLs send no CORS headers to
+  // gemini.google.com, but an extension worker with host_permissions is exempt.
+  if (msg && msg.cmd === "gcb-fetch") {
+    (async () => {
+      const r = await fetch(msg.url, { credentials: "include" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const blob = await r.blob();
+      const buf = new Uint8Array(await blob.arrayBuffer());
+      let bin = "";
+      for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+      return { mime: blob.type, b64: btoa(bin) };
+    })().then(sendResponse, (e) => sendResponse({ error: String(e.message || e) }));
+    return true; // async sendResponse
   }
 });
 

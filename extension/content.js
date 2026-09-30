@@ -536,6 +536,27 @@
         try { chrome.runtime.sendMessage({ cmd: "gcb-reload" }); } catch (e) {}
         return;
       }
+      // Byte fetch for media the cookie backend generated: Google 403s a
+      // server-side GET, but the browser's own session passes. In-page first
+      // (usercontent video serves CORS here), else the extension worker (lh3
+      // images don't). No DOM involved, so it runs even while the tab is busy.
+      if (msg.type === "fetch") {
+        try {
+          const kind = msg.kind || "video";
+          let media;
+          try {
+            media = await grabBinary(msg.url, kind);   // video host allows CORS
+          } catch (e) {
+            const r = await chrome.runtime.sendMessage({ cmd: "gcb-fetch", url: msg.url });
+            if (!r || r.error) throw new Error(`fetch failed in page (${e.message}) and worker (${r && r.error})`);
+            media = { kind, mime: r.mime, b64: r.b64 };
+          }
+          ws.send(JSON.stringify({ type: "result", id: msg.id, media: [media] }));
+        } catch (e) {
+          ws.send(JSON.stringify({ type: "error", id: msg.id, message: String(e.message || e) }));
+        }
+        return;
+      }
       if (msg.type === "chat" || msg.type === "image" || msg.type === "video") {
         if (busy) {
           ws.send(
