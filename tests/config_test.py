@@ -43,7 +43,7 @@ def test_thinking_tier_is_never_advertised_when_absent():
     # 2.1 removed the thinking tier (*_LITE is a new cheap tier, not a rename).
     # Where it is gone we must serve flash but must NOT list it as available.
     advertised = config.list_public_models()
-    if config._THINKING is None:
+    if not config._HAS_THINKING:
         assert not any("thinking" in m for m in advertised)
         assert config.resolve_model("gemini-3-flash-thinking") == "gemini-3-flash"
     else:

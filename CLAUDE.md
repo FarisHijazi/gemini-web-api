@@ -27,7 +27,7 @@ Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell)
    its version-stripping normalizer (`MODEL_PREFIX_RE`) — one table, both
    versions. Adding `Model.X` anywhere re-breaks the upgrade.
 3. **The thinking tier does not exist on 2.1.x.** `*_LITE` is a new cheap tier
-   with its own model id, *not* `*_THINKING` renamed. `config._THINKING` is None
+   with its own model id, *not* `*_THINKING` renamed. `config._HAS_THINKING` is False
    there, thinking names resolve to flash, and `list_public_models()` stops
    advertising them — never advertise a model that is silently served as another.
 4. **Never hand-build the generate payload — overlay it.** `inner_req_list`
@@ -59,14 +59,27 @@ Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell)
    lines are NOT stop conditions: one successful video run logged "successfully
    finalized the response" 4 times while Veo was still rendering, because the
    text answer finalizes long before the video URL appears. Only a URL or an
-   explicit stop may end the poll, and a URL in hand always wins. The log sink
+   explicit stop may end the poll, and a URL in hand always wins. That is also
+   why the stop still comes from the log and not from `read_chat`'s parsed
+   output: a stopped turn and a finalized-but-still-rendering turn parse
+   identically (text, no video) — only the library's warning tells them apart.
+   The URL itself DOES come from the parsed output
+   (`turn.model_output.videos[0].url`); never scrape raw responses. The log sink
    is process-wide, so it must also match the poll's own cid — jobs run
    concurrently and an unscoped sink fails every video in flight with an
    unrelated turn's reason.
-8. **`uv run` spawns python as a child**, so a pidfile holding the launcher's pid
-   does not stop the server — `~/bin/gemini-web-api-server stop` walks
-   descendants by PPID (`pgrep -P`, ancestry not name matching) and then verifies
-   the port actually went quiet.
+8. **In a launcher, background ONLY the server command.** `( cd X && nohup cmd & )`
+   backgrounds the whole `&&` list in a forked subshell, so `$!` is that
+   subshell and the server is its child — the pidfile then misses the server,
+   and a stop leaves it holding the port. `~/bin/gemini-web-api-server` does
+   `cd` first, then `nohup .venv/bin/python main.py &`, after
+   `uv sync --frozen` (honours `uv.lock`, unlike `uvx`), so the recorded pid IS
+   the listener and a plain `kill` stops it.
+9. **Video's model is an explicit header dict, not a name.** The library
+   resolves names against the models the account registered at init, which
+   omit the advanced tiers (`Unknown model name: 'gemini-3-pro-advanced'`).
+   `build_model_header` can't build it portably either: 2.0 takes
+   `(id, tail)`, 2.1 `(id, tail, number)`.
 
 ## Two backends, one server (`GEMINI_BACKEND`)
 
@@ -118,8 +131,9 @@ auto-routing).
   deep-research (00bx/gemini-web-proxy, LiteLLM, vLLM, LocalAI) — see devlog.
 - `gemini_openai/server.py` — FastAPI app: chat (stream+non-stream, tool calls),
   models, images, videos, `/files`.
-- `gemini_openai/video.py` — Veo video: prime conversation → raw StreamGenerate
-  (video inner flags) → poll `read_chat` for the download URL → download.
+- `gemini_openai/video.py` — Veo video: prime conversation → library-built
+  StreamGenerate with the video fields overlaid → poll `read_chat`'s parsed
+  videos for the download URL → download.
   Async job store behind the API. See devlog `claude_2026-07-08-0045-*`.
 - `gemini_openai/video_bridge.py` — **browser bridge** for the video download:
   the `usercontent.google.com` host needs a per-host, per-account `OSID` only the

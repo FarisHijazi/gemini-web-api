@@ -569,9 +569,9 @@ async def videos_generations(body: dict, request: Request, _=Depends(check_key))
             _chrome_job_view(job_id, _CHROME_VIDEO_JOBS[job_id], request), status_code=202
         )
 
-    model = config.resolve_model(body.get("model") or "gemini-3-pro")
+    # Video always runs on video.VIDEO_MODEL; a requested chat model can't change that.
     aspect_int = 9 if _norm_aspect(body) == "9:16" else 16
-    job_id = video_mod.create_job(webapi_manager, prompt, model, files, aspect_int)
+    job_id = video_mod.create_job(webapi_manager, prompt, files, aspect_int)
     return JSONResponse(_job_view(job_id, video_mod.JOBS[job_id], request), status_code=202)
 
 
