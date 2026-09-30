@@ -102,8 +102,10 @@ Both backends **always load**; `server.py:pick_manager()` routes each chat reque
   `claude_2026-08-01-parallel-tab-pool.md`.
 
 `config.BACKEND` is a **preference**: `auto` (default — extension for chat AND
-images when a tab is connected, else cookies; vision/video always cookies),
-`webapi` (always cookies), `chrome` (always extension). Images via the extension
+media when a tab is connected, else cookies; vision always cookies), `webapi`
+(always cookies), `chrome` (always extension), `media` (chat on cookies, images
+and video via the extension when a tab is connected — what the local launcher
+runs, so a tab never serializes Claude Code's chat). Media via the extension
 are the only reliable byte-path — Google 403s every server-side download of
 `lh3 gg-dl` URLs (session-locked); the extension grabs bytes in-page and the
 server serves them from `/files/`. Why an extension not injection:

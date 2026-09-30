@@ -38,8 +38,8 @@ from .openai_schemas import (
 #                        otherwise fall back to the cookie backend
 #   "webapi"           — always the cookie backend
 #   "chrome"           — always the extension for chat
-# Media generation (images/video) always uses the cookie backend (the extension
-# can't produce them), so a single server does chat-via-extension AND cookie media.
+#   "media"            — chat on cookies; images/video via the extension when a
+#                        tab is connected (see media_via_chrome)
 from .chrome_backend import hub as _chrome_hub, manager as chrome_manager, register_ws
 from .gemini_pool import manager as webapi_manager
 
@@ -47,7 +47,7 @@ from .gemini_pool import manager as webapi_manager
 def pick_manager(has_files: bool = False):
     """Choose the chat backend for this request."""
     mode = config.BACKEND
-    if mode == "webapi":
+    if mode in ("webapi", "media"):
         return webapi_manager
     if mode == "chrome":
         return chrome_manager
@@ -59,10 +59,8 @@ def pick_manager(has_files: bool = False):
 
 
 def active_backend_name() -> str:
-    mode = config.BACKEND
-    if mode == "auto":
-        return "chrome" if _chrome_hub.online() else "webapi"
-    return mode
+    """The chat backend a request would use right now."""
+    return "chrome" if pick_manager() is chrome_manager else "webapi"
 
 
 def media_via_chrome() -> bool:
@@ -74,7 +72,7 @@ def media_via_chrome() -> bool:
     """
     if config.BACKEND == "chrome":
         return True
-    return config.BACKEND == "auto" and _chrome_hub.online()
+    return config.BACKEND in ("auto", "media") and _chrome_hub.online()
 
 
 def _save_media_b64(b64: str, ext: str) -> tuple[str, int]:
@@ -225,7 +223,7 @@ async def list_models(_=Depends(check_key)) -> dict:
 async def health() -> dict:
     return {
         "status": "ok",
-        "backend_mode": config.BACKEND,          # auto | webapi | chrome
+        "backend_mode": config.BACKEND,          # auto | webapi | chrome | media
         "active_backend": active_backend_name(),  # which one handles chat right now
         "extension_connected": _chrome_hub.online(),
     }

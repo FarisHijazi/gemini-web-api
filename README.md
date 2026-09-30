@@ -29,6 +29,9 @@ load:
   chat-via-extension *and* cookie-based media simultaneously.
 - **`webapi`** — always cookies.
 - **`chrome`** — always the extension for chat (errors if no tab is connected).
+- **`media`** — chat always on cookies; images/video through the extension when a
+  tab is connected, which is what gets the bytes (Google 403s server-side
+  downloads). Use it when chat must not go through a visible, serialized tab.
 
 The `chrome` path exists because cookie auth is fragile (profiles go stale,
 `__Secure-1PSID` expires, Veo downloads need a CDP bridge). When the extension

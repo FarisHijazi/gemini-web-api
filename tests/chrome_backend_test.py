@@ -216,8 +216,19 @@ def routing_checks():
         _check("auto + tab + files -> webapi (vision)",
                srv.pick_manager(has_files=True) is srv.webapi_manager)
 
+        _check("auto + tab -> media via chrome", srv.media_via_chrome())
+
+        srv.config.BACKEND = "media"
+        _check("media + tab -> chat stays on webapi", srv.pick_manager() is srv.webapi_manager)
+        _check("media + tab -> active webapi", srv.active_backend_name() == "webapi")
+        _check("media + tab -> media via chrome", srv.media_via_chrome())
+        srv._chrome_hub.conns.clear()
+        _check("media + no tab -> media via webapi", not srv.media_via_chrome())
+        srv._chrome_hub.conns[999] = TabConn(ws=object(), key=999, tab_id="t")
+
         srv.config.BACKEND = "webapi"
         _check("forced webapi ignores tab", srv.pick_manager() is srv.webapi_manager)
+        _check("forced webapi keeps media on cookies", not srv.media_via_chrome())
     finally:
         srv.config.BACKEND = prev_mode
         srv._chrome_hub.conns.clear()
