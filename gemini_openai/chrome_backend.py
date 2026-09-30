@@ -337,6 +337,34 @@ class ChromeManager:
                 raise
         raise RuntimeError("media failed on all accounts: " + " | ".join(errors))
 
+    async def fetch_bytes(self, url: str, authuser: str | None = None,
+                          timeout: float = REQUEST_TIMEOUT) -> bytes:
+        """Download `url` with a connected tab's browser session.
+
+        Used for media the cookie backend generated: the usercontent host 403s
+        any server-side GET, but the logged-in browser passes. Doesn't reserve
+        the tab -- a fetch touches no DOM, so it can share a busy one.
+        """
+        import base64
+
+        conns = [c for c in hub.conns.values()
+                 if authuser is None or c.authuser == str(authuser)]
+        if not conns:
+            raise RuntimeError(f"no gemini tab connected on u/{authuser}")
+        conn = max(conns, key=lambda c: c.connected_at)
+        rid = hub.next_id()
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        hub.pending[rid] = fut
+        hub.job_conn[rid] = conn.key
+        try:
+            await conn.send({"type": "fetch", "id": rid, "url": url})
+            msg = await asyncio.wait_for(fut, timeout=timeout)
+        finally:
+            hub.pending.pop(rid, None)
+            hub.job_conn.pop(rid, None)
+        media = (msg.get("media") or [{}])[0]
+        return base64.b64decode(media.get("b64") or "")
+
     async def _generate_media_locked(
         self, prompt: str, kind: str, timeout: float | None = None,
         aspect: str | None = None, authuser: str | None = None,
