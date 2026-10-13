@@ -126,9 +126,13 @@ a server-side GET 403s **even with the full cookie jar on the very first hit**,
 and an in-page `fetch()` is CORS-blocked. The extension grabs the rendered
 image *inside* the Gemini tab and the server re-serves it from `/files/`.
 
-Setup (once per Chrome session): load `extension/` (unpacked, MV3) and open one
-`gemini.google.com/u/N/app` tab per Google account you want as a worker. Each
-tab registers with the server; check with:
+Generation itself runs on the cookie backend; a connected tab only **downloads
+the bytes** (a `{"type":"fetch"}` job, no DOM), for images and videos alike.
+
+Setup (once per Chrome profile): load `extension/` (unpacked, MV3 — `chrome://extensions`
+→ Developer mode → Load unpacked; the native folder picker needs a human or
+`xdotool`) and keep one `gemini.google.com/u/N/app` tab open per Google account
+you want as a worker. Each tab registers with the server; check with:
 
 ```bash
 curl -s localhost:8100/v1/status   # "tabs": one row per worker (authuser, busy)
@@ -159,6 +163,15 @@ Semantics you must know (all empirically established):
   that cap — pin them via `authuser` (first attempt gets the full timeout).
 - `GEMINI_MEDIA_EXCLUDE_AUTHUSERS` (comma-separated indices, default empty)
   hard-bans accounts from media.
+- **Every account that may serve media needs its own open tab** — the byte
+  fetch goes to a tab of the account that generated it, with `authuser=N` on the
+  URL (since 0.4.0 / 2026-10-13). Without `authuser`, lh3 and usercontent 403
+  any account but the browser's default one.
+- **No "access other apps and services on this device" prompt.** Since
+  extension 0.4.0 the WebSocket lives in the extension service worker, which
+  Chrome's Local Network Access exempts. A 0.3.x extension opened it from the
+  content script and silently never connected once that per-site prompt was
+  blocked (`navigator.permissions.query({name:"loopback-network"})` → denied).
 - The extension self-manages: idle worker tabs auto-refresh (a ~10-min-idle tab
   fails every job), the first-use "Keep in mind / Got it" notice is auto-dismissed
   even when it pops mid-response, and `POST /v1/extension/reload` remotely
@@ -174,19 +187,34 @@ $GW gemini-web-api-cli video "a fox running through a snowy forest"          # j
 $GW gemini-web-api-cli video "a fox running through a snowy forest" --wait   # poll
 ```
 
-Normally ~1–3 min. On success it prints either a **local URL**
-(`http://localhost:8100/files/<job>.mp4`, real bytes — only with the bridge
-below) or the raw `usercontent.google.com` URL, which like images only works in
-a logged-in browser.
+Over HTTP (what agents should use):
+
+```bash
+curl -s -X POST localhost:8100/v1/videos/generations -H 'Content-Type: application/json' \
+  -d '{"prompt":"...", "aspect_ratio":"9:16"}'        # -> {"id":"vid_…","status":"queued"}
+curl -s localhost:8100/v1/videos/generations/vid_…    # poll every ~10s
+# -> {"status":"completed","authuser":"1","url":"http://localhost:8100/files/vid_….mp4", ...}
+```
+
+Normally ~60–110 s. With a worker tab connected the `url` is real MP4 bytes
+(extension fetch); otherwise only the browser-only `download_url` comes back.
+
+⚠️ **`aspect_ratio: "9:16"` is NOT honored yet (2026-10-13).** The web UI sends
+`inner[55]=[[17]]` for Portrait and gets a real 720×1280 clip; the API now sends
+the same `[[17]]` but still gets 1280×720. The UI request also differs in the
+video tool flag (`message_content[9]` ends `…,2]]]` vs our `1`) and `inner[17]`
+(`[[0]]` vs our `[[1]]`) — test those next, one change at a time. Until then,
+crop landscape to 9:16 or generate portrait by hand in the UI.
 
 ### Real video downloads (browser bridge)
 
 The MP4 host needs a per-host, per-account `OSID` cookie only Chrome mints, so a
 plain server GET 403s. The fix is to give the server a Chrome DevTools port.
 
-**This is already set up and automatic** — a second systemd user service,
-`gemini-cdp-chrome`, runs a headless Chrome on `:9222`. The main service `Wants=`
-it, so it comes up automatically. You normally do nothing.
+**Legacy fallback — the extension tab pool (§4) is the default byte path now.**
+A second systemd user service, `gemini-cdp-chrome`, can run a headless Chrome on
+`:9222`; it is only used when `GEMINI_CDP_URL` is set and no tab is connected.
+Read the warning below before ever starting it.
 
 ```bash
 curl -s http://localhost:9222/json/version    # JSON => bridge available
@@ -282,6 +310,12 @@ So **you normally do nothing** when a quota runs out. Check what's configured:
 curl -s localhost:8100/v1/status     # active profile, failover list, bridge on/off
 $GW gemini-web-api-cli doctor        # same, in readable form
 ```
+
+**An exhausted account answers in plain text** ("I can create more videos as soon
+as your limit resets"), which is neither a video nor a stop signal, so the job
+waits out `GEMINI_VIDEO_TIMEOUT` on it before moving on, then caches that account
+as spent for 3 h (`~/.cache/gemini-web-api/quota.json`, video only — images
+ignore it and detect their own exhaustion in seconds).
 
 **A video job that times out means quota is exhausted on _every_ profile tried** —
 an exhausted account stalls rather than erroring cleanly. The error message names

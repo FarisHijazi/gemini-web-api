@@ -86,6 +86,23 @@ Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell)
    although Gemini had made the media — `read_chat` showed "Your video is
    ready!". Generate with cookies (`read_chat` gives the URL); use the tab only
    to fetch bytes.
+11. **The extension's WebSocket must live in the service worker.** Chrome's
+   Local Network Access gates a page — content scripts included — behind a
+   per-site "access other apps and services on this device" prompt before it may
+   reach `localhost`; once blocked/dismissed (`loopback-network: denied`) no tab
+   ever connects and `/v1/status` shows `tabs: []` with no error anywhere. The
+   worker is exempt, so `background.js` owns the socket and `content.js`'s
+   `openSocket()` mirrors it over a `gcb-ws` Port, with a 20 s keepalive so the
+   MV3 worker doesn't idle out (a dropped port reads as a close → reconnect).
+12. **Every media URL needs `authuser=N` for its owning account.** With several
+   accounts signed in, lh3 images and usercontent videos 403 everyone but the
+   browser's default account unless `authuser` names the owner — so failover to
+   u/1 generated fine and then failed to download. `video.with_authuser()` is
+   applied in both byte-fetch paths; keep a worker tab open per account.
+13. **Portrait video is not solved.** The UI's Portrait sends `inner[55]=[[17]]`
+   (not the old guess `[[9]]`) and gets 720×1280; the API sending `[[17]]` still
+   gets 1280×720. Next candidates: tool flag `2` in `message_content[9]`,
+   `inner[17]=[[0]]`. Each test burns a daily video, so change one thing at a time.
 
 ## Two backends, one server (`GEMINI_BACKEND`)
 
