@@ -70,7 +70,9 @@ DevTools' Network panel driven by xdotool worked.
 ## Host config (not in the repo)
 
 - `~/.config/gemini-web-api/env`: `GEMINI_CHROME_ACCOUNT=buzamahmooza@gmail.com`,
-  `GEMINI_AUTHUSER=0`, `GEMINI_AUTHUSER_FALLBACKS=0,1,2`, `GEMINI_VIDEO_TIMEOUT=240`.
+  `GEMINI_AUTHUSER=0`, `GEMINI_AUTHUSER_FALLBACKS=0,1,2`, `GEMINI_VIDEO_TIMEOUT=240`,
+  `GEMINI_BACKEND=webapi`. In `auto`, chat would be typed into any connected bare `/app`
+  tab, and other agents' hand-driven Gemini tabs register as eligible workers too.
 - Drop-in `~/.config/systemd/user/gemini-web-api.service.d/local-checkout.conf` runs this
   checkout (`uv run --frozen --project …`) until the branch is merged and pushed.
 - Worker tabs `u/0`, `u/1`, `u/2` (`/app`) open in Chrome; closing them loses that account.
