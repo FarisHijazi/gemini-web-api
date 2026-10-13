@@ -26,6 +26,7 @@ from gemini_webapi import logger as _glogger
 # Reverse-engineered from live gemini.google.com "Create videos"/"Create image"
 # traffic — this same flag is used for both image and video generation.
 VIDEO_TOOL = [None, None, None, None, None, None, [[None, None, None, 1]]]
+VIDEO_TOOL_PORTRAIT = [None, None, None, None, None, None, [[None, None, None, 2]]]
 
 # gemini-3-pro-advanced's header, passed as an explicit model dict: the library
 # resolves NAMES against the models the account registered at init, which omit
@@ -71,7 +72,10 @@ class _JsonProxy:
             mc = obj[0]
             while len(mc) < 10:
                 mc.append(None)
-            mc[9] = VIDEO_TOOL
+            # The UI's Portrait request carries tool flag 2 where landscape sends 1
+            # (captured 2026-10-13); inner[55] alone still came back 1280x720.
+            portrait = _video_ctx_aspect.get() == ASPECT_PORTRAIT
+            mc[9] = VIDEO_TOOL_PORTRAIT if portrait else VIDEO_TOOL
             # The image-vs-video selectors (reverse-engineered by diffing live
             # "Create image" vs "Create video" traffic):
             #   inner[17] = [[1]] (video) vs [[0]] (image)   — the library hardcodes [[0]]
