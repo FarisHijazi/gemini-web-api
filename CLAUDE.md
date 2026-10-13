@@ -103,6 +103,14 @@ Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell)
    (not the old guess `[[9]]`) and gets 720×1280; the API sending `[[17]]` still
    gets 1280×720. Next candidates: tool flag `2` in `message_content[9]`,
    `inner[17]=[[0]]`. Each test burns a daily video, so change one thing at a time.
+14. **The model registry is per ACCOUNT, and Google changes it.** The library
+   builds it from each account's `GET_USER_STATUS` at init, so a name can exist on
+   one profile and not another. On 2026-10-13 u/2 started listing only
+   `gemini-auto` (*"Auto"*), and `gemini-3-flash` raised `Unknown model name` —
+   every image request that failed over to u/2 was a 500. `gemini_pool._for_account()`
+   resolves the name against the live client and sends `model=None` (Google's
+   default for that account) when it is absent. Every cookie-backend call must go
+   through `GeminiManager.generate*`, never `client.generate_content` directly.
 
 ## Two backends, one server (`GEMINI_BACKEND`)
 
