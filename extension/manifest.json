@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Gemini Chrome Bridge",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Drives the logged-in gemini.google.com tab and relays it to a local OpenAI-compatible endpoint. No cookies/CDP -- uses the browser's own session.",
   "content_scripts": [
     {

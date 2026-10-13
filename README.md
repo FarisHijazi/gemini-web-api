@@ -49,11 +49,18 @@ runs inside your logged-in tab, **if the tab can chat, so can the API**.
 2. Load the extension (one time — "Load unpacked" is a native OS picker):
    `chrome://extensions` → **Developer mode** on → **Load unpacked** → select the
    [`extension/`](extension/) folder.
-3. Keep a `gemini.google.com` tab open and logged in. Verify:
+3. Keep a `gemini.google.com/u/N/app` tab open and logged in **for every Google
+   account that may serve media** — downloads go through a tab of the account
+   that generated the file. Verify:
    ```bash
-   curl -s localhost:8100/health
-   # -> "backend_mode":"auto","active_backend":"chrome","extension_connected":true
+   curl -s localhost:8100/v1/status   # "tabs": one row per worker, with its authuser
    ```
+
+The socket to the server lives in the extension's **service worker** (content
+scripts relay over a `chrome.runtime` port). Chrome's Local Network Access puts a
+page — content scripts included — behind a per-site "access other apps and
+services on this device" prompt before it may reach `localhost`; the extension
+worker is exempt, so no prompt is ever needed.
 
 **Why an extension (not an injected script):** `gemini.google.com`'s CSP blocks a
 page-context WebSocket to `localhost`. A content script runs in an isolated world
@@ -319,6 +326,9 @@ curl localhost:8100/v1/videos/generations/vid_...
 **How it works** (the hard-won details):
 - Video is selected by inner-payload fields `inner[17]=[[1]]` + aspect
   `inner[55]` + the media tool flag — the library hardcodes the *image* values.
+  Aspect codes, captured from the web UI: Landscape `[[16]]`, Portrait `[[17]]`.
+  ⚠️ `"aspect_ratio":"9:16"` still yields 1280×720 over the API (2026-10-13) —
+  see `docs/devlog/claude_2026-10-13-extension-lna-authuser-aspect.md`.
 - **The library builds the request; we only overlay those fields.** We used to
   hand-build the whole `inner_req_list`, which broke silently when gemini-webapi
   2.1 widened it 69 → 81 and added `inner[79]`/`[80]`: the payload stayed valid
