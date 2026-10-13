@@ -99,10 +99,11 @@ Kill by port, not name: `fuser -k 8100/tcp` (`pkill -f main.py` kills the shell)
    browser's default account unless `authuser` names the owner — so failover to
    u/1 generated fine and then failed to download. `video.with_authuser()` is
    applied in both byte-fetch paths; keep a worker tab open per account.
-13. **Portrait video is not solved.** The UI's Portrait sends `inner[55]=[[17]]`
-   (not the old guess `[[9]]`) and gets 720×1280; the API sending `[[17]]` still
-   gets 1280×720. Next candidates: tool flag `2` in `message_content[9]`,
-   `inner[17]=[[0]]`. Each test burns a daily video, so change one thing at a time.
+13. **Portrait video needs TWO fields.** The UI's Portrait sends `inner[55]=[[17]]`
+   (not the old guess `[[9]]`) **and** tool flag `2` in `message_content[9]`
+   (landscape sends `1`). `[[17]]` alone still returned 1280×720; adding flag 2
+   returned a real 720×1280 (2026-10-13, one run). `inner[17]` stays `[[1]]` — the
+   `[[0]]` hypothesis was never needed. Each test burns a daily video.
 14. **The model registry is per ACCOUNT, and Google changes it.** The library
    builds it from each account's `GET_USER_STATUS` at init, so a name can exist on
    one profile and not another. On 2026-10-13 u/2 started listing only

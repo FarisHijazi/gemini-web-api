@@ -81,3 +81,53 @@ DevTools' Network panel driven by xdotool worked.
 
 - Portrait video: test tool flag `2`, then `inner[17]=[[0]]`, once quota resets.
 - Merge + push the branch, then delete the drop-in to return to `uvx --from git+…`.
+
+---
+
+## Follow-up 16:35–17:10 UTC: every image request was a 500, and portrait video is solved
+
+**Lineage.** Asked by another Claude session (business-nofomo) on the user's behalf: image
+generation worked at 13:00 UTC, then every `POST /v1/images/generations` returned 500.
+
+### Root cause: Google moved u/2 to an "Auto"-only model picker
+
+```
+ValueError: Unknown model name: 'gemini-3-flash'. Available registered models: gemini-auto
+```
+
+Not a dependency bump (uvx still had `gemini-webapi` 2.1.1, same as `uv.lock`) and not our
+env. gemini-webapi builds its model registry **per account** from `GET_USER_STATUS` at init.
+Probed all three accounts with the same code:
+
+| account | registered models |
+|---|---|
+| u/0, u/1 | `gemini-flash-lite` (3.5), `gemini-flash` (3.6), `gemini-pro` (3.1) |
+| u/2 | **`gemini-auto` only** |
+
+The image route walks `GEMINI_AUTHUSER_FALLBACKS`; once u/0 and u/1 ran out it switched the
+shared client to u/2 and **stayed there**, so every later request asked u/2 for
+`gemini-3-flash` and died before reaching Google. The ValueError also escaped the failover loop.
+
+**Fix (PR https://github.com/FarisHijazi/gemini-web-api/pull/8, squash-merged):**
+`gemini_pool._for_account()` resolves the name against the live client and sends
+`model=None` (Google's default for that account) when it is absent; applied to both
+`generate` and `generate_stream`. 4 tests in `tests/gemini_pool_test.py` (3 failed first).
+Trap 14 in CLAUDE.md. Qodo's review errored twice ("Sorry, something went wrong"), so it
+left no comments to address.
+
+### Portrait video: tool flag 2 was the missing piece
+
+One change on top of `inner[55]=[[17]]`: `message_content[9]` tool flag `2` for portrait
+(landscape keeps `1`). **First run: 720×1280, 10.0 s, real portrait framing** (job
+`vid_64a9fc35…`, u/0, ~70 s). Hypothesis 2 (`inner[17]=[[0]]`) was not needed and not
+spent. Tests in `tests/video_payload_test.py`; trap 13 rewritten.
+
+### Host notes
+
+- The u/0 and u/2 `/app` worker tabs were open but silent (`/v1/status` showed only u/1 and
+  a u/2 *conversation* tab). `POST /v1/extension/reload` did not wake them; re-navigating
+  each tab to its own `/app` URL did. Probably Chrome discarded them in the background.
+- `uvx --from git+…` re-resolved the merged main without `--refresh` once the cache had been
+  warmed with `uvx --refresh-package gemini-web-api --from git+… python -c …`.
+- The temporary drop-in `gemini-web-api.service.d/local-checkout.conf` ran the checkout for
+  the portrait test only, and was removed after that PR merged.
