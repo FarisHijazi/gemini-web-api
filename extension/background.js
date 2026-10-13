@@ -1,7 +1,9 @@
 /* MV3 service worker.
  *
- * The content script does the real work (owns the WebSocket, drives the page).
- * The worker's jobs:
+ * The content script does the real work (drives the page). The worker's jobs:
+ *   0. OWN THE WEBSOCKET for each content script ("gcb-ws" port): Chrome's Local
+ *      Network Access blocks a page from reaching localhost unless the user grants
+ *      a per-site prompt; an extension worker with host_permissions is exempt.
  *   1. AUTO-INJECT content.js into every open gemini.google.com tab whenever the
  *      extension (re)loads -- so a code update or chrome.runtime.reload() never
  *      needs a human to reload tabs by hand. Freshly injected scripts take over;
@@ -29,6 +31,23 @@ async function injectAll(reason) {
     }
   }
 }
+
+// One real socket per content-script port; either side closing closes the other.
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "gcb-ws") return;
+  let ws = null;
+  port.onMessage.addListener((m) => {
+    if (m.t === "open" && !ws) {
+      ws = new WebSocket(m.url);
+      ws.onopen = () => port.postMessage({ t: "open" });
+      ws.onmessage = (e) => port.postMessage({ t: "msg", d: e.data });
+      ws.onclose = () => { try { port.postMessage({ t: "close" }); } catch (e) {} };
+    } else if (m.t === "send" && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(m.d);
+    } // "ka" (keepalive) needs no handling: receiving it resets the idle timer.
+  });
+  port.onDisconnect.addListener(() => { try { if (ws) ws.close(); } catch (e) {} });
+});
 
 chrome.runtime.onInstalled.addListener(() => injectAll("installed/reloaded"));
 chrome.runtime.onStartup.addListener(() => injectAll("browser-startup"));

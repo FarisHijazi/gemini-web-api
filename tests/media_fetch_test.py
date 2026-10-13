@@ -34,7 +34,8 @@ def test_tab_fetches_full_size_and_serves_it_locally(monkeypatch, tmp_path):
 
     _with_tab(monkeypatch, tmp_path, fetch)
     out = asyncio.run(server._local_url(URL, REQ))
-    assert asked == [URL + "=s2048-rj"]
+    # Full size, and the account selector -- lh3 403s another account's image.
+    assert asked == [URL + "=s2048-rj?authuser=0"]
     assert out.startswith("http://127.0.0.1:8100/files/") and out.endswith(".png")
     assert (tmp_path / out.rsplit("/", 1)[1]).read_bytes().startswith(b"\x89PNG")
 

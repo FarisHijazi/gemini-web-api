@@ -49,8 +49,12 @@ def _is_generate_payload(obj) -> bool:
 
 
 _video_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar("gemini_video_mode", default=False)
-# Aspect ratio code: 16 = 16:9 landscape (default), 9 = 9:16 portrait, 1 = 1:1.
-_video_ctx_aspect: contextvars.ContextVar[int] = contextvars.ContextVar("gemini_video_aspect", default=16)
+# Aspect ratio code sent as inner[55]. Captured from the web UI's own request
+# (2026-10-13, "Aspect ratio" menu): Landscape (16:9) = 16, Portrait (9:16) = 17.
+# The old guess of 9 for portrait was silently ignored -> landscape output.
+ASPECT_LANDSCAPE = 16
+ASPECT_PORTRAIT = 17
+_video_ctx_aspect: contextvars.ContextVar[int] = contextvars.ContextVar("gemini_video_aspect", default=ASPECT_LANDSCAPE)
 
 
 class _JsonProxy:
@@ -71,7 +75,7 @@ class _JsonProxy:
             # The image-vs-video selectors (reverse-engineered by diffing live
             # "Create image" vs "Create video" traffic):
             #   inner[17] = [[1]] (video) vs [[0]] (image)   — the library hardcodes [[0]]
-            #   inner[55] = [[aspect]] (16=16:9, 9=9:16, 1=1:1) — video only
+            #   inner[55] = [[aspect]] (ASPECT_LANDSCAPE / ASPECT_PORTRAIT) — video only
             #   inner[54] = []                                — video only
             # NOTE: inner[49] is a per-conversation TURN COUNTER, NOT the video
             # selector. Setting an arbitrary value in a fresh turn causes Google
@@ -148,7 +152,7 @@ async def _poll_video_url(client, cid: str, timeout: float, interval: float = 8.
     raise TimeoutError("video did not finish generating in time")
 
 
-async def generate_video_url(manager, prompt: str, aspect: int = 16, timeout: float = 300.0,
+async def generate_video_url(manager, prompt: str, aspect: int = ASPECT_LANDSCAPE, timeout: float = 300.0,
                              files=None) -> dict:
     """Full pipeline → returns {"download_url", "cid"} for a finished video.
 
@@ -180,6 +184,17 @@ async def generate_video_url(manager, prompt: str, aspect: int = 16, timeout: fl
     return {"download_url": url, "cid": cid}
 
 
+def with_authuser(url: str, n: str) -> str:
+    """Add the multi-login account selector to a Google media URL (idempotent).
+
+    Both hosts the extension fetches from -- usercontent video and lh3 gg-dl
+    images -- 403 another signed-in account's media unless `authuser` names it.
+    """
+    if "authuser=" in url:
+        return url
+    return f"{url}{'&' if '?' in url else '?'}authuser={n}"
+
+
 async def download_video(manager, url: str, dest: str) -> int:
     """Download a finished-video URL to `dest`. Returns byte size.
 
@@ -193,7 +208,12 @@ async def download_video(manager, url: str, dest: str) -> int:
     from .chrome_backend import hub, manager as chrome_manager
 
     if hub.online():
-        data = await chrome_manager.fetch_bytes(url, authuser=config.AUTHUSER or "0")
+        # With several Google accounts signed in, usercontent serves the URL only
+        # to its owner, picked by `authuser` -- without it the browser's default
+        # account gets a 403 for any other account's video (verified 2026-10-13:
+        # no param / authuser=0 -> 403, authuser=1 -> 200 on a u/1 video).
+        n = config.AUTHUSER or "0"
+        data = await chrome_manager.fetch_bytes(with_authuser(url, n), authuser=n)
         if b"ftyp" not in data[:64]:
             raise RuntimeError("extension fetch returned non-mp4 data")
         with open(dest, "wb") as f:
@@ -266,7 +286,7 @@ def mark_quota_exhausted(profile: str) -> None:
         pass
 
 
-def _profile_candidates() -> list[str]:
+def _profile_candidates(use_quota_cache: bool = True) -> list[str]:
     """Google profiles to try, current one first.
 
     Media generation has a PER-ACCOUNT daily quota, so an exhausted profile makes
@@ -284,7 +304,11 @@ def _profile_candidates() -> list[str]:
     order = [cur] if not raw else [cur] + [
         p.strip() for p in raw.split(",") if p.strip() and p.strip() != cur
     ]
-    known_bad = _quota_cache_read()
+    # The cache only ever records VIDEO exhaustion (a stalled video costs the full
+    # timeout to discover). Images learn exhaustion in seconds, and an account
+    # with no video quota -- or no video tool at all -- may still make images,
+    # so the image path passes use_quota_cache=False.
+    known_bad = _quota_cache_read() if use_quota_cache else {}
     fresh = [p for p in order if p not in known_bad]
     if fresh:
         return fresh
@@ -315,7 +339,7 @@ def _is_quota_failure(exc: BaseException) -> bool:
     return isinstance(exc, (VideoStopped, asyncio.TimeoutError, TimeoutError))
 
 
-async def _generate_with_failover(manager, job: dict, prompt: str, files=None, aspect: int = 16):
+async def _generate_with_failover(manager, job: dict, prompt: str, files=None, aspect: int = ASPECT_LANDSCAPE):
     """Try each candidate profile until one produces a video."""
     from . import config
 
@@ -353,7 +377,7 @@ async def _generate_with_failover(manager, job: dict, prompt: str, files=None, a
     raise last_exc  # pragma: no cover
 
 
-async def _run_job(manager, job_id: str, prompt: str, files, aspect: int = 16):
+async def _run_job(manager, job_id: str, prompt: str, files, aspect: int = ASPECT_LANDSCAPE):
     job = JOBS[job_id]
     job["status"] = "processing"
     try:
@@ -384,7 +408,7 @@ async def _run_job(manager, job_id: str, prompt: str, files, aspect: int = 16):
         job["error"] = f"{type(e).__name__}: {e}"
 
 
-def create_job(manager, prompt: str, files, aspect: int = 16) -> str:
+def create_job(manager, prompt: str, files, aspect: int = ASPECT_LANDSCAPE) -> str:
     job_id = "vid_" + uuid.uuid4().hex[:20]
     JOBS[job_id] = {"status": "queued", "prompt": prompt, "created": True}
     asyncio.create_task(_run_job(manager, job_id, prompt, files, aspect))
