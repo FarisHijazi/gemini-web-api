@@ -1,13 +1,17 @@
 /* Gemini Chrome Bridge -- content script.
  *
- * Runs inside gemini.google.com. Owns a WebSocket to the local relay
- * (ws://localhost:8111/ws), receives {type:"chat",...} jobs, drives the real UI
- * (new chat -> type prompt -> send -> scrape reply), and posts the answer back.
+ * Runs inside gemini.google.com. Talks to the local relay (ws://localhost:8100/ws),
+ * receives {type:"chat",...} jobs, drives the real UI (new chat -> type prompt ->
+ * send -> scrape reply), and posts the answer back.
  *
- * Why the content script (not the service worker) owns the socket: MV3 service
- * workers are killed after ~30s idle; a content script lives as long as the tab.
- * ws://localhost from an https page is allowed (localhost is "potentially
- * trustworthy"), so no mixed-content block.
+ * The socket itself lives in the extension SERVICE WORKER (background.js) and is
+ * mirrored here over a chrome.runtime Port (openSocket below). Chrome's Local
+ * Network Access gates a page -- content scripts included -- from reaching
+ * localhost behind a per-site "access other apps and services on this device"
+ * prompt; once that is blocked or dismissed no tab ever connects. The extension
+ * worker, holding host_permissions for localhost, is exempt. A keepalive on the
+ * port stops the MV3 worker idling out; if it dies anyway the port drops, which
+ * reads as a socket close and the normal reconnect takes over.
  *
  * Completion detection is deliberately language-agnostic: aria-labels here are
  * Arabic, so we rely on response-text STABILITY plus the disappearance of the
@@ -477,7 +481,7 @@
   // one silently drops the reply -- the server then times out with no message.
   function sendMsg(obj) {
     try {
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (ws && ws.readyState === 1) {
         ws.send(JSON.stringify(obj));
         return true;
       }
@@ -503,11 +507,43 @@
   // Google multi-login account this tab is on (/u/N/ in the URL; default 0).
   const authuserOf = () => (location.pathname.match(/\/u\/(\d+)\//) || [])[1] || "0";
 
+  // WebSocket-shaped proxy over a Port to the service worker, which owns the real
+  // socket (see the header: Local Network Access blocks it from a content script).
+  function openSocket(url) {
+    const port = chrome.runtime.connect({ name: "gcb-ws" });
+    let ka = null;
+    const s = {
+      readyState: 0, onopen: null, onmessage: null, onclose: null, onerror: null,
+      send(d) { if (s.readyState === 1) port.postMessage({ t: "send", d }); },
+      close() { finish(); try { port.disconnect(); } catch (e) {} },
+    };
+    function finish() {
+      if (s.readyState === 3) return;
+      s.readyState = 3;
+      clearInterval(ka);
+      if (s.onclose) s.onclose();
+    }
+    port.onMessage.addListener((m) => {
+      if (m.t === "open") {
+        s.readyState = 1;
+        ka = setInterval(() => { try { port.postMessage({ t: "ka" }); } catch (e) { finish(); } }, 20000);
+        if (s.onopen) s.onopen();
+      } else if (m.t === "msg") {
+        if (s.onmessage) s.onmessage({ data: m.d });
+      } else if (m.t === "close") {
+        s.close();
+      }
+    });
+    port.onDisconnect.addListener(finish);
+    port.postMessage({ t: "open", url });
+    return s;
+  }
+
   function connect() {
     const wsUrl = `ws://localhost:${PORT}/ws`;
     LOG("connecting", wsUrl);
     try {
-      ws = new WebSocket(wsUrl);
+      ws = openSocket(wsUrl);
     } catch (e) {
       scheduleReconnect();
       return;

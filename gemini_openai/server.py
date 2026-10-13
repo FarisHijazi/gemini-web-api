@@ -76,7 +76,9 @@ async def _local_url(url: str, request: Request) -> str:
     try:
         # Full size, the suffix gemini_webapi's GeneratedImage.save falls back to;
         # the bare URL is a 512px preview.
-        data = await chrome_manager.fetch_bytes(url + "=s2048-rj", authuser=config.AUTHUSER or "0")
+        n = config.AUTHUSER or "0"
+        data = await chrome_manager.fetch_bytes(
+            video_mod.with_authuser(url + "=s2048-rj", n), authuser=n)
     except Exception as e:  # noqa: BLE001
         print(f"[media] tab fetch failed, returning the raw URL: {e}", flush=True)
         return url
@@ -489,7 +491,7 @@ async def images_generations(body: dict, request: Request, _=Depends(check_key))
     # replies with text ("come back tomorrow…") and no image. Walk the configured
     # fallback profiles the same way video jobs do.
     original = str(config.AUTHUSER or "0")
-    candidates = video_mod._profile_candidates()
+    candidates = video_mod._profile_candidates(use_quota_cache=False)
     tried: list[str] = []
     last_text = ""
     for prof in candidates:
@@ -586,7 +588,8 @@ async def videos_generations(body: dict, request: Request, _=Depends(check_key))
         )
 
     # Video always runs on video.VIDEO_MODEL; a requested chat model can't change that.
-    aspect_int = 9 if _norm_aspect(body) == "9:16" else 16
+    aspect_int = (video_mod.ASPECT_PORTRAIT if _norm_aspect(body) == "9:16"
+                  else video_mod.ASPECT_LANDSCAPE)
     job_id = video_mod.create_job(webapi_manager, prompt, files, aspect_int)
     return JSONResponse(_job_view(job_id, video_mod.JOBS[job_id], request), status_code=202)
 
