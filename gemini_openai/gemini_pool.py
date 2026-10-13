@@ -24,6 +24,29 @@ from . import config
 _RETRYABLE = (AuthError, APIError)
 
 
+def _for_account(client: GeminiClient, kwargs: dict) -> dict:
+    """Resolve a model NAME against the models this account actually offers.
+
+    The registry is per account and comes from Google at init, so a name that
+    works on one profile can be absent on another: on 2026-10-13 some accounts
+    started listing only `gemini-auto`, and `gemini-3-flash` raised
+    `ValueError: Unknown model name` -- a 500 on every request. A name the
+    account lacks becomes `model=None`, i.e. Google's own default for that
+    account (the library's documented "omit it" behaviour). Non-string specs
+    (the video path's raw header dict) and libraries without `resolve_model`
+    (2.0.x) pass through untouched.
+    """
+    name = kwargs.get("model")
+    resolve = getattr(client, "resolve_model", None)
+    if not isinstance(name, str) or resolve is None:
+        return kwargs
+    try:
+        return {**kwargs, "model": resolve(name)}
+    except ValueError:
+        print(f"[gemini] account has no model {name!r}; using its default", flush=True)
+        return {**kwargs, "model": None}
+
+
 class GeminiManager:
     def __init__(self) -> None:
         self._client: GeminiClient | None = None
@@ -84,11 +107,11 @@ class GeminiManager:
         """
         client = await self.get()
         try:
-            return await client.generate_content(*args, **kwargs)
+            return await client.generate_content(*args, **_for_account(client, kwargs))
         except _RETRYABLE:
             await self.reset()
             client = await self.get()
-            return await client.generate_content(*args, **kwargs)
+            return await client.generate_content(*args, **_for_account(client, kwargs))
 
     async def generate_stream(self, *args, **kwargs):
         """True token streaming: yields ModelOutput chunks (with `text_delta`).
@@ -99,7 +122,7 @@ class GeminiManager:
         client = await self.get()
         yielded = False
         try:
-            async for out in client.generate_content_stream(*args, **kwargs):
+            async for out in client.generate_content_stream(*args, **_for_account(client, kwargs)):
                 yielded = True
                 yield out
             return
@@ -109,7 +132,7 @@ class GeminiManager:
         # Nothing was emitted yet — safe to re-init and restart once.
         await self.reset()
         client = await self.get()
-        async for out in client.generate_content_stream(*args, **kwargs):
+        async for out in client.generate_content_stream(*args, **_for_account(client, kwargs)):
             yield out
 
 
