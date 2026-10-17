@@ -143,7 +143,8 @@ Generate (any OpenAI images client, or curl):
 
 ```bash
 curl -s -X POST localhost:8100/v1/images/generations -H 'Content-Type: application/json' \
-  -d '{"prompt":"...", "authuser":"2"}'   # authuser optional — pins the FIRST account tried
+  -d '{"prompt":"...", "model":"gemini-pro", "authuser":"2"}'
+# model: ALWAYS "gemini-pro" (the server default is flash). authuser optional — pins the FIRST account tried
 # -> {"data":[{"url":"http://localhost:8100/files/<id>.png"}], "authuser":"3", ...}
 ```
 
@@ -399,6 +400,21 @@ when auto-detection picks the wrong one.
   auth works. Always test with an actual `chat` call.
 
 ## Guidance for Claude
+
+**Media sourcing rules (owner, 2026-10-17) — apply to every content job:**
+
+1. **Stock footage first.** Search free stock/public-domain sources (Pexels,
+   Pixabay, Wikimedia Commons, NASA/DVIDS/archive.org) for a real clip or photo
+   before generating anything. Generate only what stock genuinely lacks.
+2. **Generate on Gemini Pro.** Pass `"model":"gemini-pro"` on every
+   `/v1/images/generations` call — the server defaults to flash. (Video always
+   runs on the fixed Veo model; there is nothing to pick.)
+3. **On a refusal, retry in a NEW chat with a reworded prompt** — never re-ask in
+   the chat that refused. Each API request already opens a fresh chat
+   (`temporary=True`), so a retry is simply a new request with the prompt
+   changed a bit (composition/wording, not filter-dodging). In the web UI, click
+   "New chat" first.
+
 
 **Use this skill instead of the alternatives — they fail:**
 
