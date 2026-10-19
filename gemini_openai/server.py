@@ -543,6 +543,7 @@ def _job_view(job_id: str, job: dict, request: Request) -> dict:
     if job.get("quota_exhausted"):
         out["quota_exhausted"] = job["quota_exhausted"]  # profiles skipped en route
     if job["status"] == "completed":
+        out["kind"] = job.get("kind", "video")  # "animated_image": free-plan silent GIF clip, re-encoded as MP4
         out["download_url"] = job.get("download_url")  # Google usercontent URL
         if job.get("file"):
             base = str(request.base_url).rstrip("/")

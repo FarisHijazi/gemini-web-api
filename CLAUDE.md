@@ -182,6 +182,13 @@ auto-routing).
   (emulated, incl. streaming + round-trip), `/v1/models`, vision input,
   multi-turn, OpenAI SDK drop-in, image generation, multi-account auth,
   **Veo video** (`/v1/videos/generations`, async job + poll).
+- **Free-plan accounts:** Gemini answers a video request with an animated GIF
+  ("Because you're on a free plan...") that the library does not parse;
+  `video.find_animated_image` reads it from the raw turn and the job returns it
+  re-encoded as a silent MP4 with `kind: "animated_image"` (360x640 via `=s0`).
+  An account with unaccepted Terms (`TOS_PENDING` in the log) has its stream
+  silently aborted -- accept them in the browser. See
+  `docs/devlog/claude_20261019-free-plan-animated-clips.md`.
 - **Video caveat:** per-account daily quota — when it runs out Gemini stops the
   turn and says so, and the job now fails fast with that verbatim reason
   (`docs/devlog/claude_20260916-video-stop-reason.md`). Video only works as a

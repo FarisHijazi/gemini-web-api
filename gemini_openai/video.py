@@ -130,13 +130,62 @@ def _stop_watcher(reasons: list[str], cid: str):
     )
 
 
+ANIMATED_HOST = "https://lh3.googleusercontent.com/"
+
+
+def find_animated_image(node) -> str | None:
+    """Return the GIF URL a free-plan account sends instead of a Veo video.
+
+    Free accounts answer a video request with "Because you're on a free plan, I
+    generated a GIF for you instead." The library parses neither videos nor
+    images from that turn; the clip is an attachment entry shaped
+    `[_, _, "animated_image.gif", "https://lh3.googleusercontent.com/gg/..."]`
+    inside the turn's nested JSON strings, so walk the decoded structure for it.
+    """
+    if isinstance(node, str):
+        if node[:1] in ("[", "{"):
+            try:
+                return find_animated_image(_json.loads(node))
+            except ValueError:
+                return None
+        return None
+    if isinstance(node, dict):
+        node = list(node.values())
+    if isinstance(node, list):
+        if (len(node) > 3 and isinstance(node[2], str) and node[2].lower().endswith(".gif")
+                and isinstance(node[3], str) and node[3].startswith(ANIMATED_HOST)):
+            return node[3]
+        for item in node:
+            if found := find_animated_image(item):
+                return found
+    return None
+
+
+async def _read_animated_image(client, cid: str) -> str | None:
+    """Read the conversation's newest turns raw and look for a free-plan GIF."""
+    from gemini_webapi.constants import GRPC
+    from gemini_webapi.types import RPCData
+    from gemini_webapi.utils import extract_json_from_response
+
+    response = await client._batch_execute([RPCData(
+        rpcid=GRPC.LIST_CONVERSATION_TURNS,
+        payload=_json.dumps([cid, 2, None, 1, [1], [4], None, 1]),
+    )])
+    return find_animated_image(extract_json_from_response(response.text))
+
+
+def is_animated(url: str) -> bool:
+    return url.startswith(ANIMATED_HOST)
+
+
 async def _poll_video_url(client, cid: str, timeout: float, interval: float = 8.0) -> str:
     """Poll read_chat until the library has parsed a finished video on the turn.
 
     `read_chat` returns None while Gemini is still working and swallows its own
     errors, so there is nothing to catch here. A turn can read as finalized
     while Veo is still rendering, so "no video yet" is not a stop -- only the
-    library's explicit stop warning is.
+    library's explicit stop warning is. A free-plan account's GIF counts as the
+    result (see `find_animated_image`); a real video still wins over it.
     """
     reasons: list[str] = []
     sink = _stop_watcher(reasons, cid)
@@ -148,6 +197,8 @@ async def _poll_video_url(client, cid: str, timeout: float, interval: float = 8.
             for turn in hist.turns if hist else []:
                 if turn.model_output and turn.model_output.videos:
                     return turn.model_output.videos[0].url
+            if hist and (gif := await _read_animated_image(client, cid)):
+                return gif
             if reasons:
                 raise VideoStopped(f"Gemini stopped generating: {reasons[-1]}")
             await asyncio.sleep(interval)
@@ -164,7 +215,8 @@ async def generate_video_url(manager, prompt: str, aspect: int = ASPECT_LANDSCAP
        first turn returns error 1053).
     2. Send the prompt with the video context set, so the library builds the
        request and the JSON proxy marks it as video.
-    3. Poll read_chat until the finished-video download URL is available.
+    3. Poll read_chat until the finished-video download URL is available
+       (or a free-plan account's animated GIF, `kind: "animated_image"`).
     """
     client = await manager.get()
     chat = client.start_chat(model=VIDEO_MODEL)
@@ -185,7 +237,7 @@ async def generate_video_url(manager, prompt: str, aspect: int = ASPECT_LANDSCAP
         _video_ctx_aspect.reset(atok)
 
     url = await _poll_video_url(client, cid, timeout=timeout)
-    return {"download_url": url, "cid": cid}
+    return {"download_url": url, "cid": cid, "kind": "animated_image" if is_animated(url) else "video"}
 
 
 def with_authuser(url: str, n: str) -> str:
@@ -248,6 +300,39 @@ async def download_video(manager, url: str, dest: str) -> int:
     with open(dest, "wb") as f:
         f.write(r.content)
     return len(r.content)
+
+
+async def download_animated_clip(url: str, dest: str) -> int:
+    """Fetch a free-plan GIF through a logged-in tab and re-encode it as a silent MP4.
+
+    lh3 403s a server-side GET like usercontent does, so this needs a connected
+    extension tab. Returns the MP4's byte size.
+    """
+    import tempfile
+
+    from . import config
+    from .chrome_backend import hub
+    from .chrome_backend import manager as chrome_manager
+
+    if not hub.online():
+        raise RuntimeError("downloading a free-plan GIF needs a connected extension tab")
+    n = config.AUTHUSER or "0"
+    # The bare URL redirects to a 288x512 preview; `=s0` is the native size (360x640).
+    data = await chrome_manager.fetch_bytes(with_authuser(url + "=s0", n), authuser=n)
+    if not data.startswith(b"GIF8"):
+        raise RuntimeError("extension fetch returned non-gif data")
+    with tempfile.NamedTemporaryFile(suffix=".gif") as gif:
+        gif.write(data)
+        gif.flush()
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-loglevel", "error", "-y", "-i", gif.name, "-movflags", "+faststart",
+            "-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", dest,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _out, err = await asyncio.wait_for(proc.communicate(), timeout=120)
+        if proc.returncode:
+            raise RuntimeError(f"ffmpeg could not convert the GIF: {err.decode()[-300:]}")
+    return os.path.getsize(dest)
 
 
 # --------------------------------------------------------------------------- #
@@ -355,13 +440,13 @@ async def _generate_with_failover(manager, job: dict, prompt: str, files=None, a
             if prof != str(config.AUTHUSER or "0"):
                 await _switch_profile(manager, prof)
             job["authuser"] = prof
+            job["tried_profiles"] = candidates[: i + 1]
             try:
                 result = await asyncio.wait_for(
                     generate_video_url(manager, prompt, aspect=aspect, timeout=VIDEO_TIMEOUT,
                                        files=files),
                     timeout=VIDEO_TIMEOUT + 60,
                 )
-                job["tried_profiles"] = candidates[: i + 1]
                 return result
             except Exception as e:  # noqa: BLE001
                 last_exc = e
@@ -390,11 +475,15 @@ async def _run_job(manager, job_id: str, prompt: str, files, aspect: int = ASPEC
         # if the server-side fetch fails on the usercontent OSID auth wrinkle.
         job["download_url"] = result["download_url"]
         job["cid"] = result.get("cid")
+        job["kind"] = result.get("kind", "video")
         job["status"] = "completed"
         try:
             os.makedirs(MEDIA_DIR, exist_ok=True)
             path = os.path.join(MEDIA_DIR, f"{job_id}.mp4")
-            job["bytes"] = await download_video(manager, result["download_url"], path)
+            if job["kind"] == "animated_image":
+                job["bytes"] = await download_animated_clip(result["download_url"], path)
+            else:
+                job["bytes"] = await download_video(manager, result["download_url"], path)
             job["file"] = path
         except Exception as e:  # noqa: BLE001
             # generation succeeded; only the server-side download step didn't
