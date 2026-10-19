@@ -558,18 +558,32 @@ def _job_view(job_id: str, job: dict, request: Request) -> dict:
 
 def _reference_image(value):
     """A reference frame for image-to-video: a `data:image/...;base64,` URL (so remote
-    clients can send the image inline) or, as before, a path on this host."""
+    clients can send the image inline) or, as before, a path on this host.
+
+    An inline image is saved under MEDIA_DIR with its real extension and passed on as a
+    path: the upload's MIME type comes from the filename, and raw bytes upload as
+    `application/octet-stream`, which Gemini ignores as a starting frame."""
     import base64
     import binascii
+    import mimetypes
+    import uuid
 
     if isinstance(value, str) and value.startswith("data:"):
         header, _, data = value.partition(",")
         if not header.startswith("data:image/") or ";base64" not in header:
             raise HTTPException(status_code=400, detail="reference images must be base64 data:image/... URLs")
         try:
-            return base64.b64decode(data, validate=True)
+            raw = base64.b64decode(data, validate=True)
         except (binascii.Error, ValueError):
             raise HTTPException(status_code=400, detail="reference image is not valid base64") from None
+        mime = header[len("data:"):].split(";", 1)[0]
+        ext = {"image/jpeg": ".jpg"}.get(mime) or mimetypes.guess_extension(mime) or ".png"
+        folder = os.path.join(video_mod.MEDIA_DIR, "refs")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, f"{uuid.uuid4().hex}{ext}")
+        with open(path, "wb") as f:
+            f.write(raw)
+        return path
     return value
 
 

@@ -9,9 +9,14 @@ from gemini_openai import server
 PNG = b"\x89PNG\r\n\x1a\nfake"
 
 
-def test_data_url_becomes_bytes():
-    url = "data:image/png;base64," + base64.b64encode(PNG).decode()
-    assert server._reference_image(url) == PNG
+@pytest.mark.parametrize("mime,ext", [("image/png", ".png"), ("image/jpeg", ".jpg")])
+def test_data_url_becomes_a_typed_file(monkeypatch, tmp_path, mime, ext):
+    # The upload's MIME type comes from the filename; extensionless bytes upload as
+    # application/octet-stream and Gemini ignores them as a starting frame.
+    monkeypatch.setattr(server.video_mod, "MEDIA_DIR", str(tmp_path))
+    path = server._reference_image(f"data:{mime};base64," + base64.b64encode(PNG).decode())
+    assert path.endswith(ext) and path.startswith(str(tmp_path))
+    assert open(path, "rb").read() == PNG
 
 
 def test_local_paths_pass_through_unchanged():
