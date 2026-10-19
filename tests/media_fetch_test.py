@@ -7,6 +7,7 @@ the client still gets the raw (browser-only) URL, as before.
 import asyncio
 from types import SimpleNamespace
 
+from gemini_openai import config
 from gemini_openai import server, video
 from gemini_openai.chrome_backend import TabConn, hub
 
@@ -56,3 +57,19 @@ def test_video_download_goes_through_the_tab(monkeypatch, tmp_path):
     dest = tmp_path / "v.mp4"
     n = asyncio.run(video.download_video(None, "https://x.usercontent.google.com/d", str(dest)))
     assert n == dest.stat().st_size and b"ftyp" in dest.read_bytes()[:64]
+
+
+def test_failover_video_downloads_as_the_account_that_made_it(monkeypatch, tmp_path):
+    # A job that fell over from u/0 to u/1 must fetch with authuser=1 even though
+    # the shared client was switched back to the default profile (that was the 403).
+    seen = []
+
+    async def fetch(url, authuser=None):
+        seen.append((url, authuser))
+        return b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 32
+
+    _with_tab(monkeypatch, tmp_path, fetch)
+    monkeypatch.setattr(config, "AUTHUSER", "0")
+    dest = tmp_path / "v.mp4"
+    asyncio.run(video.download_video(None, "https://x.usercontent.google.com/d?c=1", str(dest), authuser="1"))
+    assert seen == [("https://x.usercontent.google.com/d?c=1&authuser=1", "1")]

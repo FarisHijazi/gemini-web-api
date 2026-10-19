@@ -251,7 +251,7 @@ def with_authuser(url: str, n: str) -> str:
     return f"{url}{'&' if '?' in url else '?'}authuser={n}"
 
 
-async def download_video(manager, url: str, dest: str) -> int:
+async def download_video(manager, url: str, dest: str, authuser: str | None = None) -> int:
     """Download a finished-video URL to `dest`. Returns byte size.
 
     The usercontent host 403s a server-side GET (it wants a per-account browser
@@ -268,7 +268,8 @@ async def download_video(manager, url: str, dest: str) -> int:
         # to its owner, picked by `authuser` -- without it the browser's default
         # account gets a 403 for any other account's video (verified 2026-10-13:
         # no param / authuser=0 -> 403, authuser=1 -> 200 on a u/1 video).
-        n = config.AUTHUSER or "0"
+        # `authuser` is the account that generated it (a failover job may differ from config.AUTHUSER).
+        n = str(authuser or config.AUTHUSER or "0")
         data = await chrome_manager.fetch_bytes(with_authuser(url, n), authuser=n)
         if b"ftyp" not in data[:64]:
             raise RuntimeError("extension fetch returned non-mp4 data")
@@ -302,7 +303,7 @@ async def download_video(manager, url: str, dest: str) -> int:
     return len(r.content)
 
 
-async def download_animated_clip(url: str, dest: str) -> int:
+async def download_animated_clip(url: str, dest: str, authuser: str | None = None) -> int:
     """Fetch a free-plan GIF through a logged-in tab and re-encode it as a silent MP4.
 
     lh3 403s a server-side GET like usercontent does, so this needs a connected
@@ -316,7 +317,7 @@ async def download_animated_clip(url: str, dest: str) -> int:
 
     if not hub.online():
         raise RuntimeError("downloading a free-plan GIF needs a connected extension tab")
-    n = config.AUTHUSER or "0"
+    n = str(authuser or config.AUTHUSER or "0")
     # The bare URL redirects to a 288x512 preview; `=s0` is the native size (360x640).
     data = await chrome_manager.fetch_bytes(with_authuser(url + "=s0", n), authuser=n)
     if not data.startswith(b"GIF8"):
@@ -481,9 +482,9 @@ async def _run_job(manager, job_id: str, prompt: str, files, aspect: int = ASPEC
             os.makedirs(MEDIA_DIR, exist_ok=True)
             path = os.path.join(MEDIA_DIR, f"{job_id}.mp4")
             if job["kind"] == "animated_image":
-                job["bytes"] = await download_animated_clip(result["download_url"], path)
+                job["bytes"] = await download_animated_clip(result["download_url"], path, authuser=job.get("authuser"))
             else:
-                job["bytes"] = await download_video(manager, result["download_url"], path)
+                job["bytes"] = await download_video(manager, result["download_url"], path, authuser=job.get("authuser"))
             job["file"] = path
         except Exception as e:  # noqa: BLE001
             # generation succeeded; only the server-side download step didn't
