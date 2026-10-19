@@ -189,6 +189,9 @@ auto-routing).
   An account with unaccepted Terms (`TOS_PENDING` in the log) has its stream
   silently aborted -- accept them in the browser. See
   `docs/devlog/claude_20261019-free-plan-animated-clips.md`.
+- **Image-to-video from remote clients:** `/v1/videos/generations` `images` entries may be
+  `data:image/...;base64,` URLs (decoded to bytes for the library) as well as
+  paths on this host.
 - **Video caveat:** per-account daily quota — when it runs out Gemini stops the
   turn and says so, and the job now fails fast with that verbatim reason
   (`docs/devlog/claude_20260916-video-stop-reason.md`). Video only works as a
