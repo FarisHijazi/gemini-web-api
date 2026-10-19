@@ -347,8 +347,11 @@ class ChromeManager:
         """
         import base64
 
+        # Prefer a tab on the owning account; any tab works, because the
+        # service worker sends every signed-in account's cookies and the URL's
+        # `authuser` picks the owner (free-plan accounts rarely have a tab).
         conns = [c for c in hub.conns.values()
-                 if authuser is None or c.authuser == str(authuser)]
+                 if authuser is None or c.authuser == str(authuser)] or list(hub.conns.values())
         if not conns:
             raise RuntimeError(f"no gemini tab connected on u/{authuser}")
         conn = max(conns, key=lambda c: c.connected_at)

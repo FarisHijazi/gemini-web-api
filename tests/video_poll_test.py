@@ -51,6 +51,27 @@ def _stop_log(reason, cid="c_1"):
     return _emit
 
 
+GIF = "https://lh3.googleusercontent.com/gg/abc123"
+
+
+@pytest.fixture(autouse=True)
+def _no_animated_image(monkeypatch):
+    """Paid-account behaviour by default: the turn carries no free-plan GIF."""
+    async def none(client, cid):
+        return None
+    monkeypatch.setattr(video, "_read_animated_image", none)
+
+
+def _gif_after(monkeypatch, reads):
+    """The free-plan GIF appears on the `reads`-th raw read."""
+    seen = []
+
+    async def read(client, cid):
+        seen.append(cid)
+        return GIF if len(seen) >= reads else None
+    monkeypatch.setattr(video, "_read_animated_image", read)
+
+
 def _poll(client):
     return asyncio.run(video._poll_video_url(client, "c_1", timeout=5, interval=0))
 
@@ -95,3 +116,35 @@ def test_the_log_sink_is_removed_even_on_failure():
     with pytest.raises(video.VideoStopped):
         _poll(_FakeClient([None], on_read=_stop_log("nope")))
     assert len(logger._core.handlers) == before
+
+
+def test_a_free_plan_gif_is_the_result_when_no_video_comes(monkeypatch):
+    _gif_after(monkeypatch, 2)
+    assert _poll(_FakeClient([_history(), _history(), _history()])) == GIF
+
+
+def test_a_free_plan_gif_wins_over_the_stop_signal_free_accounts_also_log(monkeypatch):
+    _gif_after(monkeypatch, 1)
+    assert _poll(_FakeClient([_history()], on_read=_stop_log("free plan"))) == GIF
+
+
+def test_a_real_video_wins_over_a_gif(monkeypatch):
+    _gif_after(monkeypatch, 1)
+    assert _poll(_FakeClient([_history(URL)])) == URL
+
+
+def test_finds_the_gif_attachment_in_nested_json_strings():
+    # Shape seen live (2026-10-19): the attachment list sits inside a JSON string
+    # inside the RPC envelope, next to unrelated contribution/usercontent entries.
+    inner = [[["c_1", "r_1"], None, None, [[["rc_1", ["Because you're on a free plan..."],
+             [None, 3, "omni_context.pb", None, None, "x", None,
+              ["", "https://contribution.usercontent.google.com/download?c=1", ""]],
+             [[None, 1, "animated_image.gif", GIF, None, "token"]]]]]]]
+    envelope = [["wrb.fr", "hNvQHb", __import__("json").dumps([inner])]]
+    assert video.find_animated_image(envelope) == GIF
+
+
+def test_ignores_non_gif_and_foreign_hosts():
+    assert video.find_animated_image([[None, 1, "photo.png", GIF]]) is None
+    assert video.find_animated_image([[None, 1, "x.gif", "https://example.com/x.gif"]]) is None
+    assert video.find_animated_image("not json") is None
